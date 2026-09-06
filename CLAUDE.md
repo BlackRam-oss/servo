@@ -1,10 +1,11 @@
 # Servo (vendored, customized)
 
-This directory is a **vendored copy** of [Servo](https://github.com/servo/servo), extracted
-from the official source zip for tag `v0.4.0` — not a git clone, not a GitHub fork, not a
-submodule. It is the rendering engine used by the parent project's "embedded" distribution
-target (see `../.github/workflows/embedded.yml`, `SERVO_TAG`), as an alternative to the
-Tauri build.
+This directory is a **vendored copy** of [Servo](https://github.com/servo/servo), currently
+tracking upstream tag `v0.5.0` (migrated from the original `v0.4.0` import — see
+`CUSTOMIZATIONS.md`'s 2026-09-04 entry for that migration's own write-up) — not a git clone,
+not a GitHub fork, not a submodule. It is the rendering engine used by the parent project's
+"embedded" distribution target (see `../.github/workflows/embedded.yml`, `SERVO_TAG`), as an
+alternative to the Tauri build.
 
 ## Why vendored instead of forked/submoduled
 
@@ -314,29 +315,82 @@ at its `html_url`.
 
 ## Upgrading to a newer Servo version (rough steps)
 
-1. Download the new tag's source zip: `https://github.com/servo/servo/archive/refs/tags/v<NEW_VERSION>.zip`.
-2. Extract it to a scratch directory (do **not** overwrite this `servo/` directory directly).
-3. Read `CUSTOMIZATIONS.md` top to bottom; reapply each entry's change to the freshly
-   extracted tree (the upstream file/line in question may have moved or changed shape since
-   `v0.4.0` — re-verify the intent still applies, don't blindly copy-paste diffs).
+**Updated 2026-09-04, after actually doing the v0.4.0 → v0.5.0 migration** (see
+`CUSTOMIZATIONS.md`'s entry of that date for the full write-up) — the steps below reflect what
+actually worked, not the untested plan that preceded it. The single biggest lesson: **do not
+try to sequentially reapply `patches/servo-v<old>/*.patch` against the new tag with
+`patch`/`git apply`.** It looks like the obvious approach, but cascades — the moment one patch
+fails to apply (upstream moved the code it targets), every later patch touching the same file
+fails too, even when its own hunk would have applied fine on its own. `post_build_commands.py`
+alone is touched by more than a dozen old patches; one early failure there poisons the rest.
+
+1. Get a full clone of the new tag (`git clone --depth 1 --branch v<NEW> https://github.com/servo/servo.git`
+   into a scratch directory, sibling to this repo — do **not** overwrite this directory
+   directly) — a real git repo, not just an extracted zip, is what step 3 needs.
+2. **Per-file 3-way merge, not sequential patch replay.** For every file `patches/servo-v<old>/`
+   touches (`grep -h "^diff --git" patches/servo-v<old>/*.patch | sed ...` to get the list),
+   run a 3-way merge with `git merge-file`: base = the pristine old-tag version of the file
+   (this repo's own root commit, `git log --oneline | tail -1` finds its hash — **not** the
+   `v<old>` tag, which gets reused for this project's own versioned releases and no longer
+   points at the pristine import, see the warning above), ours = this repo's current
+   fully-patched version of the file, theirs = the new tag's pristine version (`git show
+   v<new>:<path>` from the scratch clone). This reconciles upstream's evolution against the
+   *entire* accumulated customization for that file in one step, regardless of how many old
+   patches touched it — no cascading, and files that merge with zero conflicts need no manual
+   attention at all. Files with real conflicts (upstream and this fork's own patches touching
+   the exact same region) need hand resolution — read both sides' diffs from base, understand
+   each one's intent, reconcile by hand.
+3. **Watch for files patches never touched at all.** Two categories, both real: (a) genuinely
+   new binary/text-placeholder assets no unified diff can carry (icons, fonts, the OpenHarmony
+   symlink-placeholders — CUSTOMIZATIONS.md's "not part of any patch" mentions collect the
+   full list as of the last migration) — the 3-way merge above skips these since they have no
+   patched history to diff against; carry them over by hand (`git checkout <old-tag-commit> --
+   <path>` from this repo's own history) whenever the new tag's own copy differs. (b) Files
+   whose *only* difference is something a Windows checkout mangles that `cargo build` doesn't
+   care about but `git diff`/`patch` do: the executable bit (NTFS has no concept of it — lost
+   on every file touched by a plain recursive copy if no `rsync` is available) and git-tracked
+   symlinks (a Windows `cp` dereferences them into a plain-file copy of the target's actual
+   bytes, not the symlink's own tiny "relative path" content) both showed up as real diffs
+   against pristine that were pure copy-mechanism noise, not customizations — verify with
+   `git diff <old> <new> -- <path>` per file that looks suspiciously large-but-boring before
+   deciding it needs a patch at all.
 4. Re-reason about the default-on experimental prefs (`CUSTOMIZATIONS.md`'s "Default-on
-   experimental web platform features" entry, patch `0009-default-on-experimental-web-
-   platform-prefs`) — **don't just mechanically reapply that patch's literal 18 field
-   names.** That list was a snapshot of one Servo version's `EXPERIMENTAL_PREFS`
+   experimental web platform features" entry — as of the v0.5.0 migration, folded into
+   `patches/servo-v0.5.0/0011-storage-and-origin.patch`, not its own numbered patch anymore;
+   check that file's own header comment in `CUSTOMIZATIONS.md`'s migration entry for whichever
+   patch currently owns `components/config/prefs.rs`) — **don't just mechanically reapply the
+   current field list.** It's a snapshot of one Servo version's `EXPERIMENTAL_PREFS`
    (`ports/servoshell/prefs.rs`) and `Preferences` struct (`components/config/prefs.rs`), not
-   a fixed policy. The new tag's versions of both will likely differ — new prefs added,
-   some removed, some graduated from experimental to stable (already `true` upstream, so
-   nothing to do). For every pref that's new in either place compared to the old tag, reason
-   about it the same way that `CUSTOMIZATIONS.md` entry did: would a real video game
-   plausibly want this (graphics/audio/input/storage/UI capability), or is it dev-tooling,
-   testing-only, or unrelated to running a game (the entry lists what was deliberately left
-   off and why: WebRTC, Web Animations, Screen Wake Lock, Bluetooth, Geolocation, Credential
-   Management — plausibly game-relevant but not upstream's own vetted bundle, so left as a
-   judgment call rather than defaulted on)? Default the former to `true` here, leave the
-   latter alone, and update that `CUSTOMIZATIONS.md` entry's field list and reasoning to
-   match — don't leave it describing the previous version's set.
-5. Swap the new, patched tree in for this `servo/` directory.
-6. Update `SERVO_TAG` in `../.github/workflows/embedded.yml`.
-7. Build (`./mach build --release`) and manually verify each customization still behaves as
-   intended (no toolbar/tabs, etc.) before considering the upgrade done.
-8. Update `CUSTOMIZATIONS.md` with the new baseline version at the top.
+   a fixed policy. The new tag's versions of both will likely differ — new prefs added, some
+   removed, some graduated from experimental to stable (already `true` upstream, so nothing to
+   do). For every pref that's new in either place compared to the old tag, reason about it the
+   same way that entry did: would a real video game plausibly want this (graphics/audio/input/
+   storage/UI capability), or is it dev-tooling, testing-only, or unrelated to running a game?
+   Default the former to `true` here, leave the latter alone, and update the entry's field
+   list and reasoning to match — don't leave it describing the previous version's set.
+5. Swap the new, merged tree in for this directory — same exclusion list as before (don't
+   touch `.github/`, `CUSTOMIZATIONS.md`, `patches/`, `README.md`, `TODO.md`, `CLAUDE.md`, the
+   sibling project checkouts, or anything else this repo adds on top of vanilla Servo).
+6. Regenerate `patches/servo-v<new>/` from the merged result (`git diff <pristine-new-tag> --
+   <files>`, grouped however makes sense — the v0.5.0 migration grouped by
+   subsystem/directory instead of by logical change specifically so a file only ever needs
+   reconciling in one place on the *next* upgrade too) and verify each one applies cleanly to
+   a fresh pristine extraction of the new tag before moving on.
+7. Update `SERVO_TAG` in `test.yml`/`android.yml`/`release.yml` (this directory's own, plus
+   `../.github/workflows/embedded.yml` if that's ever wired to the patched build instead of
+   upstream's stock binary — see TODO.md #1) — but only *after* step 6, since those workflows
+   look for `patches/servo-v${SERVO_TAG}/*.patch` and will fail outright if that directory
+   doesn't exist yet for the new tag.
+8. **Verify via CI, not (only) a local build** — this repo's own local-build story on Windows
+   is broken independent of any of this (no `lld-link.exe`/`libclang`, see the toolchain gaps
+   noted elsewhere in this file), so `./mach build --release` locally may simply not be an
+   option. Push to a branch and either wait for `test.yml`'s own path-triggered run (touching
+   `patches/**` triggers it) or watch a manual `workflow_dispatch` run — it exercises the real
+   reconstruction path (download pristine + apply `patches/servo-v<new>/` + `mach build` +
+   `mach bundle`) end to end, across all 3 platforms, which is a stronger check than anything
+   achievable locally on one machine anyway. Don't stop at "it compiled" — a clean compile
+   doesn't catch a merge that silently dropped an import your own code needed (see the
+   migration entry's own "two real bugs" writeup) if nothing else in the file happened to also
+   reference that symbol; only an actual build catches that.
+9. Update `CUSTOMIZATIONS.md` with the new baseline version at the top, and this file's own
+   intro paragraph (which names the currently-tracked tag).
