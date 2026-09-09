@@ -1,8 +1,12 @@
 name: 'Build Android APK (debug, from source, with local patches)'
 
 # Early Android smoke build: on every push to main, cross-compile the engine for Android and
-# package it into a debug .apk, uploaded as a plain workflow artifact (not a GitHub Release —
-# see test.yml/release.yml for those). This builds the plain engine shell via `./mach build
+# package it into a debug .apk, published two ways: as a plain workflow artifact (per-run
+# provenance, but expires and needs digging through Actions runs to find) and — the easier
+# way to just grab the latest one to sideload/test — as a `roves_android_debug.apk` asset on
+# the rolling "test" GitHub Release (same one used for the two Packmaster-only assets below;
+# not a real, tagged GitHub Release — see test.yml/release.yml for those). This builds the
+# plain engine shell via `./mach build
 # --android` -- no --content-dir, so no bundled game content -- it's the same "engine shell
 # only, no bundled content" scope release.yml's first desktop release started with. A game's
 # own content goes through `mach bundle --android --content-dir <dist>` instead (see
@@ -293,6 +297,17 @@ jobs:
           name: roves_shell_android_debug
           path: servo-src/${{ steps.apk.outputs.path }}
 
+      # Also published as a "test" release asset (see the "upload to test release" step
+      # below) under a clean, stable filename -- the workflow-artifact upload above still
+      # exists too (mainly for anyone wanting the exact per-run provenance/UI), but artifacts
+      # expire (default retention) and are only reachable from a specific run's own page,
+      # whereas this makes "the latest debug APK" a single, permanent, easy-to-find link
+      # anyone can grab without digging through Actions runs.
+      - name: rename APK for the "test" release
+        shell: bash
+        working-directory: servo-src
+        run: cp "${{ steps.apk.outputs.path }}" ../roves_android_debug.apk
+
       # Packmaster's own Android backend (roves-ui/src-tauri/src/android.rs) never compiles
       # Rust or runs `mach` itself -- it downloads this raw .so (built here, where the NDK/
       # Rust toolchain already exist) and drives Gradle/ndk-build locally to package it with a
@@ -354,7 +369,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for asset in roves_android_native_arm64.zip roves_android_project.zip; do
+          for asset in roves_android_debug.apk roves_android_native_arm64.zip roves_android_project.zip; do
             for attempt in 1 2 3; do
               gh release upload "$TEST_RELEASE_TAG" "$asset" --clobber && break
               echo "upload attempt $attempt for $asset failed, retrying in $((attempt * 10))s..." >&2
