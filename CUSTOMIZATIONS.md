@@ -5519,3 +5519,39 @@ entry's `libservoshell.so` lookup.
 patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). Not yet re-run
 through CI to confirm this specific fix locates the apk correctly — the next `roves-action`
 run against this commit is that verification, not yet done as of this entry.
+
+**Correction (same day, see the next entry): this fix was itself still wrong.** The
+`roves-action` CI run that verified it confirmed Gradle really did report "BUILD SUCCESSFUL"
+end to end, but this function *still* printed "No servoapp.apk found anywhere under
+`build_root`" — `build_root` was the wrong search scope, not just the wrong exact path within
+it. See the next entry for where the file actually lands and why.
+
+## 2026-09-10 — Fix `_bundle_android`'s output-`.apk` lookup *scope* (previous fix's `build_root` was itself wrong)
+
+**File:** `python/servo/post_build_commands.py` (`_bundle_android`'s `built_apks` glob).
+
+**Patch:** `patches/servo-v0.5.0/0007-build-tooling.patch` (regenerated in place, same file).
+
+**Upstream behavior:** the immediately preceding entry's fix — searching `build_root`
+recursively for `servoapp.apk` — was verified against a real `roves-action` CI run and found
+*also* wrong: Gradle reported "BUILD SUCCESSFUL", all 62 tasks executed, `copyAndRenameArm64DebugAPK`
+ran without error, and yet nothing under `build_root` matched. Root cause, found by actually
+reading `buildSrc/Interop.kt`'s `getTargetDir` path math instead of assuming `build_root` was
+close enough: `getTargetDir` walks `project.rootDir.parentFile.parentFile.parentFile` — 3
+hops up from the Gradle multi-project root, which *is* `build_root` itself
+(`target/<triple>/android-bundle/`) — landing on this function's own `top_dir` (one level
+*above* `target/` entirely), then back down a completely different branch:
+`target/<rust-triple>/<SERVO_TARGET_DIR's basename>/servoapp.apk`. That's the exact same
+directory `libservoshell.so` was found in earlier in this same function (`so_matches[0]`'s
+dirname) — a *sibling* of `build_root`, one level up and back down, never a descendant of it.
+No glob rooted at `build_root` could ever have found it, regardless of the glob pattern used.
+
+**Change:** widened the search root from `build_root` to `target/<target_triple>/` (i.e.
+`self.get_top_dir()/target/<target_triple>`) — a superset that covers both `build_root`
+(`target/<triple>/android-bundle/...`) and the real landing spot
+(`target/<triple>/<build-type>/servoapp.apk`) without needing the exact `parentFile` hop count
+to stay correct if upstream ever restructures `Interop.kt` again.
+
+**Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
+patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). CI re-run against
+this commit is the real verification, pending as of this entry.

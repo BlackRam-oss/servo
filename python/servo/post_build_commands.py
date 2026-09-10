@@ -1251,15 +1251,24 @@ class PostBuildCommands(CommandBase):
         # Not `servoapp/build/outputs/apk/<variant>/*.apk` (AGP's own standard per-variant
         # output location) -- confirmed via a real build that this glob matches nothing:
         # `servoapp/build.gradle.kts`'s own `copyAndRename<Variant>APK` task (`finalizedBy`
-        # the Gradle assemble task, see that file) renames and *moves* the apk elsewhere
-        # (`getTargetDir`'s own "N parentFile calls up from the Gradle module root" math,
-        # non-obvious to hand-recompute correctly against this function's own scratch
-        # `build_root` copy -- confirmed getting it wrong once already). Searching
-        # `build_root` broadly for the renamed `servoapp.apk` that task produces sidesteps
-        # needing to recompute that path at all.
-        built_apks = glob.glob(path.join(build_root, "**", "servoapp.apk"), recursive=True)
+        # the Gradle assemble task, see that file) renames and *moves* the apk elsewhere, via
+        # `getTargetDir`'s own "3 parentFile calls up from the Gradle module root, then back
+        # down through target/<rust-triple>/<SERVO_TARGET_DIR's basename>" math. Also NOT
+        # simply "somewhere under `build_root`" (confirmed getting that wrong too, via a real
+        # build: Gradle's own "BUILD SUCCESSFUL" doesn't mean this glob found anything) --
+        # `build_root` is a scratch copy nested an extra `android-bundle/` level below
+        # `target/<triple>/`, and those 3 parentFile hops land back on this method's own
+        # top_dir, one level *above* `target/` entirely, then back down a completely
+        # different branch (`target/<triple>/<SERVO_TARGET_DIR's basename>/`, i.e. the very
+        # same directory `libservoshell.so` was found in above) -- a sibling of `build_root`,
+        # not a descendant of it. Searching all of `target/<triple>/` (a superset covering
+        # both that real location and `build_root`, so this doesn't depend on hand-recomputing
+        # the exact parentFile math staying correct) sidesteps needing to get this exactly
+        # right again.
+        target_dir_root = path.join(self.get_top_dir(), "target", target_triple)
+        built_apks = glob.glob(path.join(target_dir_root, "**", "servoapp.apk"), recursive=True)
         if not built_apks:
-            print(f"No servoapp.apk found anywhere under {build_root} after a successful-looking Gradle build.")
+            print(f"No servoapp.apk found anywhere under {target_dir_root} after a successful-looking Gradle build.")
             return 1
         shutil.copy(built_apks[0], output_dir)
 
