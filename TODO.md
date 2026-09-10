@@ -47,8 +47,16 @@ espliciti lato engine (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android`: 
 coverage..."); `roves-action` espone `android-app-name`/`android-orientation`/
 `android-theme-color`; Roves Packmaster (`roves-ui`) ha sia la UI (card Mobile, switch
 webmanifest, campi disabilitati che mostrano i valori reali del manifest) sia un vero backend
-(`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder. Non
-verificato con una build reale (vedi punto 4 sotto e il commit stesso per il disclaimer).
+(`src-tauri/src/android.rs`) che genera davvero un `.apk` — non più solo placeholder.
+
+**Aggiornamento 2026-09-10:** il flusso base (`mach bundle --android`, build debug, host
+Linux) è ora **verificato end-to-end via CI reale**, non più solo per lettura del codice —
+vedi `roves-action`'s nuovo job `build-android` e i tre bug reali trovati e corretti proprio
+grazie a quella verifica (voci "Fix `mach bundle --android` crashing unconditionally" e le due
+voci "Fix `_bundle_android`'s ... output-`.apk` lookup" in `CUSTOMIZATIONS.md`) — prima d'ora
+questo comando non aveva **mai** funzionato con successo, nonostante fosse presente da giorni.
+Restano non verificati: `--android-release` (firma reale, punto 5), e l'intero percorso su host
+Windows (punto 6).
 `theme_color`/status bar **non** implementato: rimosso dalla UI su richiesta esplicita ("la
 status bar non deve esserci"), quindi non è più nel design finale, non solo rimandato.
 
@@ -122,9 +130,12 @@ reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto
 
 ## 5. Firma dell'APK Android (release signing)
 
-**Stato: lato motore fatto (2026-09-10), non verificato su un build reale. `roves-action`/
-Roves Packmaster ancora da fare.** Vedi `CUSTOMIZATIONS.md`, voce "`mach bundle
---android-release`", per il dettaglio completo.
+**Stato: lato motore fatto (2026-09-10). Il percorso debug (senza `--android-release`) è
+verificato end-to-end via CI reale (vedi punto 3 sopra); `--android-release` in sé resta non
+verificato** (nessun ambiente CI con un keystore reale lo esercita ancora). Lato Roves
+Packmaster: fatto (2026-09-10, `src-tauri/src/signing.rs`), anch'esso non verificato con una
+build reale — vedi `roves-ui/TODO.md` #2. `roves-action` ancora da fare (vedi sotto). Vedi
+`CUSTOMIZATIONS.md`, voce "`mach bundle --android-release`", per il dettaglio completo.
 
 `mach bundle --android --android-release` ora sceglie la variante Gradle `Release` invece di
 `Debug`, riusando il meccanismo di firma **già esistente upstream**
@@ -136,13 +147,11 @@ comunque con la chiave di debug, silenziosamente). **Non verificato con una buil
 (nessun toolchain Android né un keystore vero disponibili in questa sessione per confermare
 che l'apk risultante sia genuinamente firmato, es. via `apksigner verify`).
 
-**Resta da fare**, entrambi indipendenti dal punto sopra:
+**Resta da fare:**
 
 - **`roves-action`**: nuovi input `android-keystore-*` (verosimilmente un keystore
   base64-encoded via GitHub Secret, decodificato in un file temporaneo, con le 4 variabili
-  d'ambiente impostate prima di invocare `mach bundle`).
-- **Roves Packmaster**: l'utente non ha accesso a GitHub Secrets — probabile UI per
-  generare/importare un keystore locale, vedi `roves-ui/TODO.md` #2.
+  d'ambiente impostate prima di invocare `mach bundle`). Non toccato in questo giro.
 
 ## 6. Bundling/generazione dell'APK Android anche su Windows
 
