@@ -5664,3 +5664,44 @@ behavior) — the fix the surrounding comments already assumed existed.
 extraction. No local Rust toolchain to compile against (standing gap, see this file's other
 entries) — real verification is a Windows CI/release build actually confirmed console-flash-
 free, pending as of this entry.
+
+## 2026-09-10 — `patches/servo-v0.5.0/0004-android.patch` was missing `servoapp/build.gradle.kts` entirely
+
+**File:** `support/android/apk/servoapp/build.gradle.kts`.
+
+**Patch:** `patches/servo-v0.5.0/0004-android.patch` (regenerated in place — a new diff section
+added, no existing section changed).
+
+**The gap:** this file's own migration-mapping table (see the 2026-09-04 entry's "New patch |
+Old patch #s | Covers" table) claims `0004-android` covers all of `support/android/apk/**`,
+mapped from the old v0.4.0 patches `0060`/`0061` — both of which *did* touch
+`servoapp/build.gradle.kts` (its `resValue`/`buildFeatures.resValues` block, which generates
+the `R.string.servoThemeColor` resource `MainActivity.kt` reads for the optional status-bar
+color feature — see the 2026-08-31 entry above). The regenerated v0.5.0 patch never actually
+carried that file at all — comparing every file under `support/android/apk/` between a fresh
+pristine `v0.5.0` extraction and the working tree today found it as one of only two real
+differences (the other, `gradlew.bat`, is pure CRLF/LF noise, already correctly excluded — see
+that same 2026-09-04 entry's own note on this).
+
+**Why this went unnoticed:** the two customizations that *were* preserved
+(`servoview/build.gradle.kts`, `MainActivity.kt`) happen to be enough for `roves-action` and
+`release.yml` to work, since both build from a real git checkout of this repo directly, never
+reconstructing from `patches/`. Only this repo's *own* `android.yml` — which downloads a
+pristine tag and applies `patches/` the same way `test.yml` does — actually exercises whether
+the patch set is complete, and it hadn't been re-run/re-verified since before this session's
+Android work started. It failed the moment it did run again today: `:servoapp:
+compileArm64DebugKotlin FAILED` with `Unresolved reference 'servoThemeColor'`, since without
+`buildFeatures.resValues = true` there's no `R.string.servoThemeColor` for `MainActivity.kt`'s
+existing (correctly-patched) reference to resolve against — confirmed via real CI (run
+`34516809177`).
+
+**Change:** added the missing `servoapp/build.gradle.kts` diff hunk (the same content the old
+`0060`/`0061` patches carried, re-diffed against pristine `v0.5.0`) to `0004-android.patch`.
+
+**Verification:** the regenerated patch applies cleanly to a fresh pristine `v0.5.0`
+extraction, and the applied result is byte-identical to the working tree (`diff
+--strip-trailing-cr`). A full apply-every-patch-in-sequence-then-diff-the-whole-tree pass
+(the real end-to-end check for this kind of gap, not just per-file) was started but is slow
+against the ~1.3GB pristine tree on this machine — its result, if it surfaces anything further,
+belongs in a follow-up entry rather than blocking this fix from landing. Real CI re-run of
+`android.yml` against this commit is the actual verification, pending as of this entry.
