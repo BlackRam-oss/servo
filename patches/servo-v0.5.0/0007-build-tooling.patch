@@ -35,7 +35,7 @@ index a60373031..da8163db1 100644
      print(" • Copying MSVC DLLs to binary directory...")
      if not package_msvc_dlls(servo_exe_dir, target):
 diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
-index 2f513955f..2f67f898b 100644
+index 2f513955f..9953e7162 100644
 --- a/python/servo/post_build_commands.py
 +++ b/python/servo/post_build_commands.py
 @@ -7,13 +7,17 @@
@@ -508,7 +508,7 @@ index 2f513955f..2f67f898b 100644
  @CommandProvider
  class PostBuildCommands(CommandBase):
      @Command("run", description="Run Servo", category="post-build")
-@@ -199,6 +627,1041 @@ class PostBuildCommands(CommandBase):
+@@ -199,6 +627,1050 @@ class PostBuildCommands(CommandBase):
              else:
                  raise exception
  
@@ -1133,9 +1133,18 @@ index 2f513955f..2f67f898b 100644
 +            print("Packaging Android exited with return value %d" % e.returncode)
 +            return e.returncode
 +
-+        built_apks = glob.glob(path.join(build_root, "servoapp", "build", "outputs", "apk", variant, "*.apk"))
++        # Not `servoapp/build/outputs/apk/<variant>/*.apk` (AGP's own standard per-variant
++        # output location) -- confirmed via a real build that this glob matches nothing:
++        # `servoapp/build.gradle.kts`'s own `copyAndRename<Variant>APK` task (`finalizedBy`
++        # the Gradle assemble task, see that file) renames and *moves* the apk elsewhere
++        # (`getTargetDir`'s own "N parentFile calls up from the Gradle module root" math,
++        # non-obvious to hand-recompute correctly against this function's own scratch
++        # `build_root` copy -- confirmed getting it wrong once already). Searching
++        # `build_root` broadly for the renamed `servoapp.apk` that task produces sidesteps
++        # needing to recompute that path at all.
++        built_apks = glob.glob(path.join(build_root, "**", "servoapp.apk"), recursive=True)
 +        if not built_apks:
-+            print(f"No .apk found under servoapp/build/outputs/apk/{variant}/ after a successful-looking Gradle build.")
++            print(f"No servoapp.apk found anywhere under {build_root} after a successful-looking Gradle build.")
 +            return 1
 +        shutil.copy(built_apks[0], output_dir)
 +

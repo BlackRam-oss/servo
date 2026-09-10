@@ -1248,9 +1248,18 @@ class PostBuildCommands(CommandBase):
             print("Packaging Android exited with return value %d" % e.returncode)
             return e.returncode
 
-        built_apks = glob.glob(path.join(build_root, "servoapp", "build", "outputs", "apk", variant, "*.apk"))
+        # Not `servoapp/build/outputs/apk/<variant>/*.apk` (AGP's own standard per-variant
+        # output location) -- confirmed via a real build that this glob matches nothing:
+        # `servoapp/build.gradle.kts`'s own `copyAndRename<Variant>APK` task (`finalizedBy`
+        # the Gradle assemble task, see that file) renames and *moves* the apk elsewhere
+        # (`getTargetDir`'s own "N parentFile calls up from the Gradle module root" math,
+        # non-obvious to hand-recompute correctly against this function's own scratch
+        # `build_root` copy -- confirmed getting it wrong once already). Searching
+        # `build_root` broadly for the renamed `servoapp.apk` that task produces sidesteps
+        # needing to recompute that path at all.
+        built_apks = glob.glob(path.join(build_root, "**", "servoapp.apk"), recursive=True)
         if not built_apks:
-            print(f"No .apk found under servoapp/build/outputs/apk/{variant}/ after a successful-looking Gradle build.")
+            print(f"No servoapp.apk found anywhere under {build_root} after a successful-looking Gradle build.")
             return 1
         shutil.copy(built_apks[0], output_dir)
 

@@ -5479,6 +5479,43 @@ without touching shared infrastructure at all).
 **Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
 patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). **Confirmed to fix
 the actual crash** via `roves-action`'s own CI (real `mach build --android` +
-`mach bundle --android --content-dir <real game>` end to end) — see that repo's own commit
-history around this date for the before/after run links. Not yet confirmed that the resulting
-`.apk` installs/runs correctly on a device, only that the crash is gone and Gradle completes.
+`mach bundle --android --content-dir <real game>` end to end) — Gradle now runs to completion
+("BUILD SUCCESSFUL", 62/62 tasks) instead of crashing before ever invoking it. That same run
+immediately surfaced a **third**, separate bug in the same function (wrong output-`.apk`
+lookup path) — see the next entry below — so this crash fix on its own still wasn't enough
+for a genuinely working `mach bundle --android`. Not yet confirmed that a successfully-located
+`.apk` installs/runs correctly on a device.
+
+---
+
+## 2026-09-10 — Fix `_bundle_android`'s wrong output-`.apk` lookup path
+
+**File:** `python/servo/post_build_commands.py` (`_bundle_android`'s `built_apks` glob).
+
+**Patch:** `patches/servo-v0.5.0/0007-build-tooling.patch` (regenerated in place, same file).
+
+**Upstream behavior:** after `./gradlew :servoapp:assemble<Variant>` completes,
+`_bundle_android` looked for the built `.apk` at `servoapp/build/outputs/apk/<variant>/*.apk`
+(AGP's presumed standard per-variant output location) — a real build (the same
+`roves-action` CI run that confirmed the previous entry's crash fix) proved this glob matches
+*nothing*, despite Gradle itself reporting "BUILD SUCCESSFUL" and all 62 tasks executed:
+"No .apk found under servoapp/build/outputs/apk/Arm64Debug/ after a successful-looking Gradle
+build." `servoapp/build.gradle.kts`'s own `copyAndRename<Variant>APK` task (`finalizedBy` the
+assemble task) renames the real output to `servoapp.apk` and moves it to
+`getTargetDir(debug, arch)` — a path computed by walking 3 `parentFile`s up from the Gradle
+module root (`buildSrc/Interop.kt`), which does *not* land back at this function's own
+scratch `build_root` the way a first read of that helper suggests (confirmed getting this
+exact recomputation wrong once already, which is what motivated not trying to hand-recompute
+it a second time here).
+
+**Change:** searches `build_root` recursively for `servoapp.apk` by name
+(`glob.glob(path.join(build_root, "**", "servoapp.apk"), recursive=True)`) instead of trying
+to reconstruct either AGP's standard location or the custom task's own moved-to location —
+robust to exactly where Gradle's own build script decides to put it, the same "search for the
+actual file instead of computing where it should theoretically be" fix as the previous
+entry's `libservoshell.so` lookup.
+
+**Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
+patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). Not yet re-run
+through CI to confirm this specific fix locates the apk correctly — the next `roves-action`
+run against this commit is that verification, not yet done as of this entry.
