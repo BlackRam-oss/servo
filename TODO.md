@@ -89,8 +89,10 @@ Da fare, in ordine indicativo di dipendenza:
 
 ## 4. Bundling Android su Windows: `ndk-build` invocato senza fallback `.cmd`
 
-**Stato:** noto, non ancora iniziato — scoperto il 2026-09-02 lavorando al backend Android di
-Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
+**Stato: fatto (2026-09-10), non verificato su un build Windows reale.** Vedi
+`CUSTOMIZATIONS.md`, voce "Fix `ndk-build` invocation for Windows", e
+`patches/servo-v0.5.0/0004-android.patch` (rigenerata). Scoperto il 2026-09-02 lavorando al
+backend Android di Roves Packmaster (`roves-ui/src-tauri/src/android.rs`).
 
 `support/android/apk/servoview/build.gradle.kts` (upstream Servo, non una customizzazione di
 questo fork) invoca l'NDK con `getNdkDir() + "/ndk-build"` — letteralmente senza estensione,
@@ -110,10 +112,13 @@ ma è stato scoperto proprio per questo e quindi bloccato esplicitamente lì,
 sessione per confermarlo empiricamente) — dedotto leggendo il codice Kotlin e il comportamento
 noto di `ProcessBuilder` su Windows, non testato.
 
-Se si vuole risolvere: modificare quella riga Gradle per scegliere `ndk-build.cmd` quando
-`org.gradle.internal.os.OperatingSystem.current().isWindows` — è una modifica a un file
-vendorizzato, quindi serve la solita voce in `CUSTOMIZATIONS.md` + patch rigenerata (vedi
-`CLAUDE.md`). Finché non è risolto, Roves Packmaster resta Linux/macOS-only per Android.
+**Fix applicato:** `getNdkDir() + "/ndk-build"` → sceglie `.cmd` su Windows via
+`org.gradle.internal.os.OperatingSystem.current().isWindows`. Verificato solo che la patch si
+applichi pulita a un'estrazione pristine di v0.5.0 — non testato contro un vero
+Gradle/NDK/`ndk-build.cmd` su Windows (nessun toolchain Android disponibile in questa
+sessione). `check_android_availability()` in `roves-ui/src-tauri/src/android.rs` va comunque
+aggiornato per smettere di bloccare Windows, e il tutto va riverificato su un runner Windows
+reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto.
 
 ## 5. Firma dell'APK Android (release signing)
 
@@ -135,16 +140,19 @@ non ha accesso a GitHub Secrets — probabile UI per generare/importare un keyst
 
 ## 6. Bundling/generazione dell'APK Android anche su Windows
 
-**Stato:** noto, non ancora iniziato — bloccato dal punto 4 sopra.
+**Stato: sbloccato dal punto 4, ma non ancora chiuso.** Il blocco Gradle (`ndk-build` senza
+fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
 
-Obiettivo: rendere disponibile su Windows sia `mach build/bundle --android` da sorgente sia il
-backend Android di Roves Packmaster (`check_android_availability()` in `roves-ui/src-tauri/src/
-android.rs` lo blocca esplicitamente oggi). Il blocco principale è il punto 4 sopra
-(`ndk-build` invocato da Gradle senza fallback `.cmd` su Windows); per il solo percorso
-`mach build/bundle` da sorgente resta anche la restrizione Linux/macOS-only sulla
-cross-compilazione Rust in `python/servo/platform/build_target.py`, indipendente dal problema
-Gradle e todo separato. Per Roves Packmaster (che non compila Rust) risolvere il punto 4 dovrebbe
-bastare a togliere il blocco.
+1. Rimuovere il blocco esplicito in `check_android_availability()`
+   (`roves-ui/src-tauri/src/android.rs`) che oggi disabilita Android su Windows in Packmaster
+   — non ha più motivo di esistere una volta verificato il punto 4.
+2. **Verificare per davvero su un runner/macchina Windows con Android SDK/NDK reale** — il
+   fix del punto 4 non è mai stato eseguito contro un `ndk-build.cmd` vero, solo verificato
+   sintatticamente. Finché non succede, "sbloccato" è una previsione, non una conferma.
+3. Per il solo percorso `mach build/bundle` da sorgente (non Packmaster, che non compila Rust)
+   resta comunque la restrizione Linux/macOS-only sulla cross-compilazione Rust in
+   `python/servo/platform/build_target.py`, indipendente dal problema Gradle — todo separato,
+   non toccato da questo punto.
 
 ## Note
 

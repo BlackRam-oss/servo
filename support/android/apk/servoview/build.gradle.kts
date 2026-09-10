@@ -1,4 +1,5 @@
 import java.util.regex.Pattern
+import org.gradle.internal.os.OperatingSystem
 
 plugins {
     alias(libs.plugins.android.library)
@@ -139,7 +140,7 @@ project.afterEvaluate {
         val ndkBuildTask = tasks.create<Exec>("ndkbuild" + compileTask.name) {
             val debug = compileTask.name.contains("Debug")
             commandLine(
-                getNdkDir() + "/ndk-build",
+                getNdkDir() + (if (OperatingSystem.current().isWindows) "/ndk-build.cmd" else "/ndk-build"),
                 "APP_BUILD_SCRIPT=../jni/Android.mk",
                 "NDK_APPLICATION_MK=../jni/Application.mk",
                 "NDK_LIBS_OUT=" + getJniLibsPath(debug, arch),

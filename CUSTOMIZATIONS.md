@@ -5330,3 +5330,41 @@ status bar color actually apply, does the icon actually get picked up by a real 
 are Linux/macOS-only host (this environment is Windows), no local Android SDK/NDK/Gradle
 toolchain here regardless. Pending a real `mach bundle --android --content-dir <dist>` run on
 Linux/macOS.
+
+---
+
+## 2026-09-10 — Fix `ndk-build` invocation for Windows (Gradle needs the `.cmd` extension)
+
+**File:** `support/android/apk/servoview/build.gradle.kts`.
+
+**Patch:** `patches/servo-v0.5.0/0004-android.patch` (regenerated in place — same file this
+patch already covered for the app-name/orientation/theme-color/icon work above).
+
+**Upstream behavior:** the `ndkbuild<Variant>` Gradle task (used only to copy
+`libservoshell.so`/`libc++_shared.so` into the APK's `jniLibs/`, not to compile anything — see
+this file's own comment above that task) invokes `getNdkDir() + "/ndk-build"`, with no file
+extension. On Linux/macOS the NDK ships a real file there named exactly `ndk-build` (a shell
+script), so this resolves fine. On Windows the NDK only ships `ndk-build.cmd` — no
+extension-less `ndk-build` file exists at all — and Gradle's `Exec`/`ProcessBuilder`-based
+task invocation doesn't do the `PATHEXT`-based extension resolution `cmd.exe` would do for a
+bare `ndk-build` typed interactively. Tracked as a known gap since the v0.5.0 migration
+surfaced it (`TODO.md` #4/#6) — this is that fix.
+
+**Change:** `getNdkDir() + (if (OperatingSystem.current().isWindows) "/ndk-build.cmd" else
+"/ndk-build")`, using Gradle's own bundled `org.gradle.internal.os.OperatingSystem` (already
+on the classpath, no new dependency) to pick the right extension per host OS.
+
+**Why:** this was the one concrete blocker keeping Android out of reach for anyone building
+from source on Windows, and separately kept Roves Packmaster's own Android backend
+(`roves-ui/src-tauri/src/android.rs`) explicitly disabled on Windows via
+`check_android_availability()` — neither compiles anything themselves on Windows in
+Packmaster's case, but both still shell out to this exact Gradle task, which was failing
+regardless of who invoked it or why.
+
+**Verification:** the patch applies cleanly to a fresh pristine `v0.5.0` extraction
+(`git apply --check`, confirmed). **Not verified against a real Windows Gradle/NDK build** —
+no Android SDK/NDK toolchain on this Windows machine to actually invoke this task and confirm
+`ndk-build.cmd` runs successfully end-to-end; only the Kotlin syntax and the reasoning that
+`ndk-build.cmd` is genuinely what the Windows NDK ships are confirmed. Whoever next touches
+Android CI on a real Windows runner (or Packmaster's own Windows Android path, once unblocked
+by this) should treat this as the thing to re-verify first if something still fails there.
