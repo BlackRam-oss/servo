@@ -299,8 +299,9 @@ working exactly as before. Instead, into a separate output directory (default:
 - **Windows:** the engine binary + its DLLs moved into a `bin/` subdirectory, plus a real
   `play.exe` at the top level — a tiny std-only Rust program, compiled on the fly with plain
   `rustc` (no Cargo project), built with `#![windows_subsystem = "windows"]` (the same
-  attribute `ports/servoshell/main.rs` already uses on `servoshell.exe` itself — see the
-  2026-08-05 entries) so double-clicking it never flashes a console. It just spawns
+  attribute `ports/servoshell/main.rs` *itself* sets, as of the 2026-09-10 fix below — this
+  entry previously and incorrectly claimed that was already true from the start; it wasn't,
+  see that entry) so double-clicking it never flashes a console. It just spawns
   `bin/servoshell.exe` with the configured args and exits.
 - **macOS:** a minimal `Servo.app` bundle (`Contents/Info.plist` + `Contents/MacOS/Servo`, a
   small shell script that `exec`s the engine binary — renamed `<binary>-core` and tucked
@@ -5613,3 +5614,53 @@ byte-identical to the working tree (confirmed via `diff --strip-trailing-cr`, th
 difference being this sandbox's own `git apply` re-normalizing line endings, not a real
 content difference). Real CI verification (does a packaged game's `indexedDB`/`WebGL2` actually
 work now) is pending as of this entry — see `TODO.md` for the follow-up release this needs.
+
+## 2026-09-10 — Actually set `#![windows_subsystem = "windows"]` (never was, despite being described as load-bearing in 3 other places)
+
+**File:** `ports/servoshell/main.rs`.
+
+**Patch:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (regenerated in place, same
+file section).
+
+**Upstream behavior:** upstream `main.rs` sets no `windows_subsystem` attribute at all — a
+plain `cargo build`/`rustc` binary on Windows defaults to the *console* subsystem, meaning
+Windows attaches a real console to every invocation unless something says otherwise.
+
+**The gap:** three separate places in this fork's own code and docs describe
+`ports/servoshell/main.rs` as already setting `#![windows_subsystem = "windows"]` —
+`desktop/cli.rs` ("this app is `#![windows_subsystem = "windows"]`, so there's no console to
+see stderr in"), `desktop/logging.rs` ("Combined with `ports/servoshell/main.rs` setting
+`#![windows_subsystem = "windows"]`..."), and this file's own "Single-executable bundle" entry
+above (claiming the generated `play.exe` launcher stub uses "the same attribute
+`ports/servoshell/main.rs` already uses on `servoshell.exe` itself"). **None of that was ever
+true** — only the *launcher stub* (`play.exe`, a separate, tiny Rust source
+`post_build_commands.py` generates and compiles on the fly) actually had the attribute; the
+real engine binary it spawns (`bin/servoshell.exe`) never did, in either the v0.4.0 or v0.5.0
+tree, going all the way back to this attribute's very first mention (v0.4.0's `0004-add-mach-
+bundle-command.patch`, which only ever added it to the generated launcher, never to
+`main.rs`).
+
+**Why this went unnoticed:** `main.rs`'s existing `#[cfg(target_os = "windows")]` block already
+calls `Console::FreeConsole()` immediately on entry (upstream Servo's own code, unmodified by
+this fork) — without the subsystem attribute, Windows auto-allocates a console for the console-
+subsystem binary *before* `main()` runs, and this call immediately detaches it. The net effect
+reads as "a console window flashes for an instant, then disappears" rather than "a console
+stays open the whole time" — easy to miss, and easy to misattribute to something else, since it
+never produces a *persistent* visible console to point at. Every one of Servo's own multi-
+process content-process spawns (`components/constellation/sandboxing.rs`'s
+`spawn_multiprocess`, which re-invokes the *same* binary as a child for each new
+tab/iframe/worker, with no `CREATE_NO_WINDOW`/window-hiding flag of its own) hits this same
+flash-then-free sequence independently, so a page needing several content processes produces
+several distinct flashes in quick succession — reported by a real user as "what look like
+several terminal windows opening and closing" at startup, before the one real game window
+appears. Confirmed this is genuinely new, not something introduced by the v0.5.0 migration:
+`main.rs` never had this attribute in the v0.4.0 tree either.
+
+**Change:** added `#![windows_subsystem = "windows"]` as a real crate-level attribute in
+`main.rs` (harmless no-op on non-Windows targets, per the attribute's own documented
+behavior) — the fix the surrounding comments already assumed existed.
+
+**Verification:** the regenerated patch applies cleanly to a fresh pristine `v0.5.0`
+extraction. No local Rust toolchain to compile against (standing gap, see this file's other
+entries) — real verification is a Windows CI/release build actually confirmed console-flash-
+free, pending as of this entry.

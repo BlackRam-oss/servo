@@ -14,6 +14,23 @@
 //!
 //! [winit]: https://github.com/rust-windowing/winit
 
+// Roves fork: no effect outside Windows (see the `windows_subsystem` attribute's own
+// documentation) -- on Windows, suppresses the console window Cargo/rustc otherwise attaches
+// to this binary by default. Several other files in this fork (`desktop/cli.rs`,
+// `desktop/logging.rs`, and the dynamically-generated `play.exe` launcher stub in
+// `post_build_commands.py`) already describe this exact behavior as load-bearing -- "no
+// console on a double-clicked Windows build" -- but the attribute making that true was never
+// actually present here. Without it, `bin/servoshell.exe` (the real engine binary the
+// generated `play.exe` launcher spawns as a child, and which itself re-spawns as each
+// content-process child via `constellation::sandboxing::spawn_multiprocess`) defaults to the
+// console subsystem: every one of those spawns briefly flashes a new console window an
+// instant before that process's own `main()` below calls `FreeConsole()` -- read by a user as
+// several terminal-like windows opening and disappearing at startup, one per process spawned,
+// before the real game window appears. See CUSTOMIZATIONS.md for the full writeup (a real
+// user report on a packaged build, not something a local `cargo check` could ever catch,
+// since neither subsystem choice affects whether the code compiles).
+#![windows_subsystem = "windows"]
+
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 
