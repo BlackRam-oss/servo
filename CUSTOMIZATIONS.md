@@ -132,6 +132,15 @@ path itself (this entry's actual patches, applied to a fresh pristine v0.5.0 dow
 entry — do that before considering this migration fully done, not just "the tree we hand-built
 compiles."
 
+**Correction (2026-09-10):** this caveat was justified — the reconstruction/patch set silently
+lost real content the direct-branch-build verification above could never have caught. See the
+2026-09-10 entries near the end of this file for two concrete cases found so far: `0011-storage-
+and-origin.patch` was missing 14 of 18 "default-on experimental prefs" (shipped broken in
+v0.4.5–v0.4.11), and `0004-android.patch` is missing `servoapp/build.gradle.kts` entirely (only
+surfaced by `android.yml`'s own patch-reconstruction build, not by `roves-action`'s
+direct-checkout build). Treat every file this migration touched as suspect until independently
+re-diffed against pristine, not just re-compiled.
+
 ---
 
 ## 2026-08-05 — Remove toolbar and tab strip UI entirely
@@ -5555,3 +5564,52 @@ to stay correct if upstream ever restructures `Interop.kt` again.
 **Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
 patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). CI re-run against
 this commit is the real verification, pending as of this entry.
+
+## 2026-09-10 — Restore 14 of 18 "default-on experimental web platform features" dropped by the v0.5.0 migration (real regression, shipped in v0.4.5–v0.4.11)
+
+**File:** `components/config/prefs.rs` (`Preferences::const_default()`).
+
+**Patch:** `patches/servo-v0.5.0/0011-storage-and-origin.patch` (regenerated in place, same
+file section as the `layout_*` prefs already there).
+
+**Upstream behavior:** the original 2026-08-07 entry below ("Default-on experimental web
+platform features") flips 18 prefs from upstream's own `false` default to `true` — a real game
+plausibly wants WebGL2/WebGPU/IndexedDB/clipboard/notifications/etc., which upstream ships
+disabled pending its own stabilization process. The 2026-09-04 v0.4.0→v0.5.0 migration entry
+above claims this was "folded into `0011-storage-and-origin.patch`" — **that claim was only
+2/3 true.** Checking what `0011` actually contained today (prompted by a real user report: a
+packaged game hit `indexedDB is not defined` at runtime) found only 4 of the original 18 prefs
+present (`layout_columns_enabled`, `layout_container_queries_enabled`,
+`layout_css_attr_enabled`, `layout_grid_enabled`), plus 3 new-in-v0.5.0 CSS prefs added
+alongside them. The other **14 were silently dropped during the migration's 3-way merge** and
+never re-added, reverting to upstream's `false`:
+`dom_async_clipboard_enabled`, `dom_exec_command_enabled`, `dom_fontface_enabled`,
+`dom_indexeddb_enabled`, `dom_intersection_observer_enabled`,
+`dom_navigator_protocol_handlers_enabled`, `dom_notification_enabled`,
+`dom_offscreen_canvas_enabled`, `dom_permissions_enabled`, `dom_sanitizer_enabled`,
+`dom_storage_manager_api_enabled`, `dom_webgl2_enabled`, `dom_webgpu_enabled`,
+`layout_variable_fonts_enabled` — notably **WebGL2 and WebGPU**, not just the narrower
+IndexedDB symptom that surfaced it.
+
+**Why this went unnoticed for a week across 7 releases (v0.4.5 through v0.4.11):** the
+migration's own "Verification" note (see the 2026-09-04 entry above) explicitly flagged that
+the patch-reconstruction path itself (what `test.yml`/`android.yml` actually exercise, and what
+a real consumer would get from `patches/`) was "not yet... verified end-to-end," only that a
+direct branch build compiled — and a `cargo build` success can't catch a dropped pref default
+any more than it caught the `ElementData` import drop the same entry documents; both are
+silent, compile-clean content losses a 3-way merge can produce with zero conflict markers.
+Nothing in this fork's own test suite exercises "is `dom_webgl2_enabled` actually `true` at
+runtime" — it took a real game shipping a real build to surface it.
+
+**Change:** restored all 14 prefs to `true` in `const_default()`, each with the same "Roves:
+on by default — EXPERIMENTAL_PREFS bundle" comment style already used for the 4 that survived,
+cross-referencing the first occurrence (`dom_async_clipboard_enabled`) instead of repeating the
+full rationale 14 times.
+
+**Verification:** brace/paren balance checked programmatically (no local Rust toolchain — see
+this file's other entries for that standing gap); the regenerated patch applies cleanly to a
+fresh pristine `v0.5.0` extraction of all 7 files `0011` touches, and the applied result is
+byte-identical to the working tree (confirmed via `diff --strip-trailing-cr`, the CRLF
+difference being this sandbox's own `git apply` re-normalizing line endings, not a real
+content difference). Real CI verification (does a packaged game's `indexedDB`/`WebGL2` actually
+work now) is pending as of this entry — see `TODO.md` for the follow-up release this needs.
