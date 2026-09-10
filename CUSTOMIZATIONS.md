@@ -5368,3 +5368,117 @@ no Android SDK/NDK toolchain on this Windows machine to actually invoke this tas
 `ndk-build.cmd` is genuinely what the Windows NDK ships are confirmed. Whoever next touches
 Android CI on a real Windows runner (or Packmaster's own Windows Android path, once unblocked
 by this) should treat this as the thing to re-verify first if something still fails there.
+
+---
+
+## 2026-09-10 — `mach bundle --android-release`: a real, signed Android release build
+
+**File:** `python/servo/post_build_commands.py` (`bundle`'s own `--android-release`
+`CommandArgument`, and `_bundle_android`'s new `android_release` parameter/Gradle-variant
+selection/signing-credential check).
+
+**Patch:** `patches/servo-v0.5.0/0007-build-tooling.patch` (regenerated in place — same file
+this patch already covered for `mach build`/`mach bundle` work).
+
+**Upstream behavior:** `mach bundle --android` always built the `Debug` Gradle variant
+(`:servoapp:assemble<Arch>Debug`), auto-signed by AGP's own throwaway debug key — fine for a
+per-commit smoke build, useless for anything meant to actually be installed outside
+`adb install`. Upstream Servo's own `support/android/apk/buildSrc/src/main/kotlin/Android.kt`
+(`getSigningKeyInfo`, not part of any patch — untouched, upstream-authored) already has a
+complete signing mechanism: if `APK_SIGNING_KEY_STORE_PATH` (plus `_STORE_PASS`/`_ALIAS`/
+`_PASS`) are set in the environment, `servoapp/build.gradle.kts` configures a real `release`
+signing config from them; otherwise the `release` build type quietly falls back to signing
+with the *debug* key. This was never wired up to anything on the `mach bundle` side, and
+falling back to a debug-signed "release" build silently is exactly the kind of failure mode
+worth refusing instead of allowing.
+
+**Change:** `--android-release` (a plain boolean flag, no new credential flags of its own —
+see below for why) switches `_bundle_android`'s Gradle variant from `<Arch>Debug` to
+`<Arch>Release`. Before doing anything else, checks `APK_SIGNING_KEY_STORE_PATH` is actually
+set in the environment and refuses with a clear error if not, rather than proceeding into a
+Gradle build that would silently debug-sign it anyway.
+
+**Why no `--android-keystore`/`-password`/`-alias`/`-password` flags:** `_bundle_android`'s
+`env = self.build_env()` already does `os.environ.copy()` — the *calling* process's full
+environment, credentials included, already flows through to the `./gradlew` subprocess this
+function shells out to, since that's exactly the same environment `getSigningKeyInfo` (a
+plain `System.getenv(...)` call) reads from on the Gradle side. Whoever invokes `mach bundle
+--android --android-release` (a CI workflow with the 4 vars set from secrets, a developer
+with them set in their shell, Roves Packmaster spawning the process with them set for just
+that call) sets those 4 env vars directly — there's no plumbing for this command to do beyond
+checking the one that matters most (`APK_SIGNING_KEY_STORE_PATH`) is actually there.
+
+**Not done here (left to `roves-action`/Roves Packmaster, per `TODO.md` #5):** neither
+consumer's own credential *sourcing* is wired up yet — `roves-action` would need new
+`android-keystore-*` inputs (base64-decoding a keystore from a GitHub Secret into a temp file,
+setting the 4 env vars before invoking this action's own `mach bundle` step) and Roves
+Packmaster would need UI to generate or import a keystore locally (no GitHub Secrets to lean
+on there) and set the same 4 env vars around its own `mach bundle --android` invocation. This
+entry only covers the engine's own half: given the 4 vars, `--android-release` now produces a
+real, verifiably-signed release `.apk` instead of a silently-debug-signed one.
+
+**Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
+patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). **Not verified
+against a real signed build** — no Android SDK/NDK/Gradle toolchain on this Windows machine,
+and no real keystore/credentials on hand to actually exercise `--android-release` end to end
+and confirm the resulting `.apk` is genuinely release-signed (e.g. via `apksigner verify` or
+equivalent). Whoever next has a real Android toolchain + a throwaway keystore available should
+do that verification before this is considered done, not just "the code reads correctly."
+
+---
+
+## 2026-09-10 — Fix `mach bundle --android` crashing unconditionally (never worked at all)
+
+**File:** `python/servo/post_build_commands.py` (`bundle`'s own `binary_dir` computation, and
+`_bundle_android`'s `SERVO_TARGET_DIR` derivation).
+
+**Patch:** `patches/servo-v0.5.0/0007-build-tooling.patch` (regenerated in place).
+
+**Upstream behavior:** `command_base.py`'s shared `binary_selection` decorator logic
+deliberately sets `servo_binary = None` for any "packaged" target (Android, OpenHarmony) —
+its own comment: "we can't run it directly... doesn't seem very useful." `bundle()`'s own
+body then unconditionally does `binary_dir = path.dirname(servo_binary)` near its very top,
+*before* ever reaching the `is_android(self.target)` branch that dispatches to
+`_bundle_android` — a plain `TypeError: expected str, bytes or os.PathLike object, not
+NoneType`, unconditionally, on every single `mach bundle --android` invocation, with no
+input combination that avoids it. `_bundle_android` itself has the exact same bug a second
+time, one level deeper: `env["SERVO_TARGET_DIR"] = path.dirname(servo_binary)`, same `None`,
+same crash, reached the moment the first one is fixed.
+
+**Why this went unnoticed until now:** the only two things that ever exercised Android
+bundling before today were `.github/workflows/android.yml` (calls `mach build --android`
+*alone* — its own auto-package dispatch, `mach package --android`, uses a completely
+different, working code path in `package_commands.py` that calls `self.get_binary_path()`
+directly instead of relying on the decorator's binary-selection output) and Roves Packmaster's
+`android.rs` (calls `mach bundle --android --content-dir <dist>` — the actual crashing path —
+but every prior session's own verification note for that backend said, explicitly, "not
+verified with a real build, no Android toolchain in this environment." Today's
+`roves-action` CI addition (see that repo's own commit adding a `build-android` job) is the
+first thing that ever actually ran `mach bundle --android` end to end on real infrastructure
+— caught this on the very first attempt.
+
+**Change:** `bundle()`'s `binary_dir` falls back to `self.get_top_dir()` when `servo_binary`
+is `None` (only used there as a *default* output location when `--output` isn't given —
+Android's own output is always driven by `_bundle_android`'s explicit `output_dir` param
+regardless). `_bundle_android` no longer touches `servo_binary` at all: it globs for
+`libservoshell.so` under `target/<triple>/**/` directly (the same thing
+`.github/workflows/android.yml`'s own shell script already does with `find`), robust to
+whichever debug/release profile subdirectory Cargo actually used, and fails with a clear
+message instead of a bare stack trace if the build hasn't actually happened yet.
+
+**Why not thread `build_type` through from the decorator instead** (mirroring
+`package_commands.py`'s own `self.get_binary_path(build_type, sanitizer=...)` call): `bundle`'s
+own `common_command_arguments(binary_selection=True, build_configuration=True)` call doesn't
+request `build_type=True`, so the decorator computes and then *pops* `build_type`/`sanitizer`
+back out of `kwargs` before `bundle()`'s body ever runs — recovering them would mean changing
+that shared decorator call's flags, with unclear effects on every other consumer of
+`binary_selection` (a materially riskier change to a `command_base.py` primitive several
+commands depend on, for a benefit `glob`-ing for the actual file on disk gets just as well
+without touching shared infrastructure at all).
+
+**Verification:** `post_build_commands.py` parses cleanly (`ast.parse`), and the regenerated
+patch applies cleanly to a fresh pristine `v0.5.0` extraction (confirmed). **Confirmed to fix
+the actual crash** via `roves-action`'s own CI (real `mach build --android` +
+`mach bundle --android --content-dir <real game>` end to end) — see that repo's own commit
+history around this date for the before/after run links. Not yet confirmed that the resulting
+`.apk` installs/runs correctly on a device, only that the crash is gone and Gradle completes.

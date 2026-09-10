@@ -122,21 +122,27 @@ reale prima di considerare questo punto davvero chiuso — vedi il punto 6 sotto
 
 ## 5. Firma dell'APK Android (release signing)
 
-**Stato:** noto, non ancora iniziato.
+**Stato: lato motore fatto (2026-09-10), non verificato su un build reale. `roves-action`/
+Roves Packmaster ancora da fare.** Vedi `CUSTOMIZATIONS.md`, voce "`mach bundle
+--android-release`", per il dettaglio completo.
 
-Oggi `mach bundle --android` (e di conseguenza sia `roves-action` che il backend Android di
-Roves Packmaster, che si appoggiano allo stesso `.apk`) produce solo un **APK di debug**,
-firmato automaticamente da Gradle con il keystore di debug standard (`~/.android/debug.keystore`,
-la stessa chiave nota/pubblica su ogni macchina) — installabile via `adb install`/sideload per
-test, ma non distribuibile: né su un Play Store (che richiede una firma di release con una
-chiave privata dell'autore), né su store alternativi che verificano comunque la firma. Serve un
-percorso di **release build firmata**: generare (o far fornire dall'utente) un keystore reale,
-passare le sue credenziali al task Gradle `assembleRelease`/`bundleRelease` invece di
-`assembleDebug`, e decidere come gestire in sicurezza la chiave privata (non deve mai finire in
-un repo git né in un log CI in chiaro). Da coordinare con `roves-action` (nuovi input
-`android-keystore-*`, verosimilmente via GitHub Secrets) e con Roves Packmaster (dove l'utente
-non ha accesso a GitHub Secrets — probabile UI per generare/importare un keystore locale, vedi
-`roves-ui/TODO.md`).
+`mach bundle --android --android-release` ora sceglie la variante Gradle `Release` invece di
+`Debug`, riusando il meccanismo di firma **già esistente upstream**
+(`support/android/apk/buildSrc/src/main/kotlin/Android.kt`'s `getSigningKeyInfo`, non
+patchato, legge 4 variabili d'ambiente: `APK_SIGNING_KEY_STORE_PATH`/`_STORE_PASS`/`_ALIAS`/
+`_PASS`) — non serviva inventare nulla lato Gradle, solo collegare `mach bundle` e rifiutarsi
+di procedere se `APK_SIGNING_KEY_STORE_PATH` non è impostata (altrimenti Gradle firmerebbe
+comunque con la chiave di debug, silenziosamente). **Non verificato con una build reale**
+(nessun toolchain Android né un keystore vero disponibili in questa sessione per confermare
+che l'apk risultante sia genuinamente firmato, es. via `apksigner verify`).
+
+**Resta da fare**, entrambi indipendenti dal punto sopra:
+
+- **`roves-action`**: nuovi input `android-keystore-*` (verosimilmente un keystore
+  base64-encoded via GitHub Secret, decodificato in un file temporaneo, con le 4 variabili
+  d'ambiente impostate prima di invocare `mach bundle`).
+- **Roves Packmaster**: l'utente non ha accesso a GitHub Secrets — probabile UI per
+  generare/importare un keystore locale, vedi `roves-ui/TODO.md` #2.
 
 ## 6. Bundling/generazione dell'APK Android anche su Windows
 

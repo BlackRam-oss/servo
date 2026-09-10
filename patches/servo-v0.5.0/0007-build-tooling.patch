@@ -35,7 +35,7 @@ index a60373031..da8163db1 100644
      print(" • Copying MSVC DLLs to binary directory...")
      if not package_msvc_dlls(servo_exe_dir, target):
 diff --git a/python/servo/post_build_commands.py b/python/servo/post_build_commands.py
-index 2f513955f..e05c9e9be 100644
+index 2f513955f..2f67f898b 100644
 --- a/python/servo/post_build_commands.py
 +++ b/python/servo/post_build_commands.py
 @@ -7,13 +7,17 @@
@@ -508,7 +508,7 @@ index 2f513955f..e05c9e9be 100644
  @CommandProvider
  class PostBuildCommands(CommandBase):
      @Command("run", description="Run Servo", category="post-build")
-@@ -199,6 +627,982 @@ class PostBuildCommands(CommandBase):
+@@ -199,6 +627,1041 @@ class PostBuildCommands(CommandBase):
              else:
                  raise exception
  
@@ -637,6 +637,17 @@ index 2f513955f..e05c9e9be 100644
 +        "accepts, e.g. `#ffffff`). Defaults to --content-dir's own manifest `theme_color` field, or "
 +        "leaves the status bar at its normal theme color if neither the manifest nor this flag set one.",
 +    )
++    @CommandArgument(
++        "--android-release",
++        action="store_true",
++        default=False,
++        help="Android only: build a signed release .apk (Gradle's `assembleRelease`) instead of the "
++        "default debug .apk. Requires APK_SIGNING_KEY_STORE_PATH/_STORE_PASS/_ALIAS/_PASS to already "
++        "be set in the environment (read directly by "
++        "support/android/apk/buildSrc/src/main/kotlin/Android.kt's getSigningKeyInfo, part of "
++        "upstream Servo's own Gradle project, not something this flag configures itself) -- fails "
++        "loudly instead of silently producing a debug-signed 'release' build if they're missing.",
++    )
 +    @CommandArgument("params", nargs="...", help="Extra command-line arguments to pass through to servoshell on launch")
 +    # build_configuration=True (not just binary_selection): registers --android/--target (see
 +    # command_base.py's common_command_arguments) and, crucially, makes this same decorator
@@ -675,6 +686,7 @@ index 2f513955f..e05c9e9be 100644
 +        android_app_name: Optional[str] = None,
 +        android_orientation: Optional[str] = None,
 +        android_theme_color: Optional[str] = None,
++        android_release: bool = False,
 +        params: Optional[List[str]] = None,
 +        **kwargs: Any,
 +    ) -> int | None:
@@ -692,17 +704,20 @@ index 2f513955f..e05c9e9be 100644
 +        * Linux: by default, a single `play` binary. With --deb, a proper
 +          .deb package instead (see _bundle_linux_deb for what it does and
 +          does not attempt).
-+        * Android (--android): a debug .apk, built via a real Gradle
-+          invocation (not a single-binary copy like the desktop platforms
-+          above) — see `_bundle_android`. `--content-dir` is copied into the
-+          APK's own assets instead of being packed/extracted at runtime.
-+          The game's own web app manifest (`manifest.webmanifest`/
-+          `manifest.json`/`site.webmanifest`, see `_read_web_manifest`)
-+          defaults the app label, locked orientation, and status bar color
-+          — each overridable via --android-app-name/--android-orientation/
-+          --android-theme-color. The launcher icon reuses the same
-+          --icon-png/auto-detected icon every other platform gets, not a
-+          separate manifest `icons`-array reading.
++        * Android (--android): a debug .apk by default, built via a real
++          Gradle invocation (not a single-binary copy like the desktop
++          platforms above) — see `_bundle_android`. `--content-dir` is
++          copied into the APK's own assets instead of being packed/
++          extracted at runtime. The game's own web app manifest
++          (`manifest.webmanifest`/`manifest.json`/`site.webmanifest`, see
++          `_read_web_manifest`) defaults the app label, locked orientation,
++          and status bar color — each overridable via --android-app-name/
++          --android-orientation/--android-theme-color. The launcher icon
++          reuses the same --icon-png/auto-detected icon every other
++          platform gets, not a separate manifest `icons`-array reading.
++          --android-release builds a real, signed release .apk instead —
++          see that flag's own help text for the (upstream, unmodified)
++          Gradle signing mechanism it relies on.
 +
 +        Every platform's *portable* output ships exactly one executable — no
 +        separate launcher process and no `roves-content-packer` binary
@@ -736,7 +751,13 @@ index 2f513955f..e05c9e9be 100644
 +            print("--dmg is only supported on macOS.")
 +            return 1
 +
-+        binary_dir = path.dirname(servo_binary)
++        # `servo_binary` is `None` for a "packaged" target (Android, OpenHarmony) --
++        # command_base.py's own `binary_selection` deliberately nulls it out for those (see
++        # that file's own comment: there's no single runnable binary to hand back). Only
++        # matters here as a *default* output location when `--output` isn't given --
++        # `_bundle_android` below derives everything it actually needs from
++        # `self.target.triple()` instead, not from this.
++        binary_dir = path.dirname(servo_binary) if servo_binary is not None else self.get_top_dir()
 +        # abspath, not the possibly-relative `output` as-is: `_wrap_windows_msi` below
 +        # `cd`s into a separate build directory before invoking candle/light, and WiX
 +        # resolves each <File Source="..."> path (baked into the .wxs from `stage_dir`,
@@ -790,7 +811,11 @@ index 2f513955f..e05c9e9be 100644
 +                android_orientation=android_orientation,
 +                android_theme_color=android_theme_color,
 +                icon_png=icon_png,
++                android_release=android_release,
 +            )
++        elif android_release:
++            print("--android-release requires --android -- there's no release-signing concept for a desktop bundle.")
++            return 1
 +
 +        content_exclude = content_exclude or []
 +        content_boot_include = content_boot_include or []
@@ -974,6 +999,7 @@ index 2f513955f..e05c9e9be 100644
 +        android_orientation: Optional[str] = None,
 +        android_theme_color: Optional[str] = None,
 +        icon_png: Optional[str] = None,
++        android_release: bool = False,
 +    ) -> int | None:
 +        """`mach bundle --android`'s entire packaging path: unlike desktop (see `bundle`'s own
 +        doc comment above), an installed APK's assets/label/icon are baked in at package time
@@ -997,12 +1023,31 @@ index 2f513955f..e05c9e9be 100644
 +        separate, Android-specific reading of the manifest's own `icons` array, deliberately:
 +        one icon-resolution mechanism for every platform, not one per platform.
 +
-+        Debug build only, same as the plain-shell CI build in
-+        `.github/workflows/android.yml`: this doesn't yet expose a way to sign a release
-+        build, since `mach bundle` has no equivalent of desktop's
-+        --package-name/--package-version signing inputs for Android.
++        Debug build by default, same as the plain-shell CI build in
++        `.github/workflows/android.yml`. `--android-release` switches to a real, signed
++        release build instead -- see this method's own signing-credential check below for
++        exactly how. `mach bundle` has no `--android-keystore`/-password/-alias flags of its
++        own: upstream Servo's `support/android/apk/buildSrc/src/main/kotlin/Android.kt`
++        (`getSigningKeyInfo`) already reads the 4 credentials straight from the environment
++        (`APK_SIGNING_KEY_STORE_PATH`/`_STORE_PASS`/`_ALIAS`/`_PASS`) when configuring
++        `servoapp/build.gradle.kts`'s own `release` signing config -- and this function's own
++        `env = self.build_env()` a few lines below already inherits the *calling* process's
++        full environment (`os.environ.copy()`), so setting those 4 vars before invoking
++        `mach bundle --android --android-release` is the entire mechanism, no plumbing needed
++        here at all.
 +        """
 +        manifest = _read_web_manifest(content_dir) if content_dir else {}
++
++        if android_release and not os.environ.get("APK_SIGNING_KEY_STORE_PATH"):
++            print(
++                "--android-release requires APK_SIGNING_KEY_STORE_PATH (and "
++                "_STORE_PASS/_ALIAS/_PASS) to already be set in the environment -- without "
++                "them, Gradle's own signing config falls back to the debug key (see "
++                "buildSrc/src/main/kotlin/Android.kt's getSigningKeyInfo), which defeats the "
++                "point of asking for a release build at all. Refusing rather than silently "
++                "producing a debug-signed 'release' .apk."
++            )
++            return 1
 +
 +        orientation = _ANDROID_ORIENTATION_MAP.get(android_orientation or manifest.get("orientation"), "unspecified")
 +        app_name = android_app_name or manifest.get("short_name") or manifest.get("name") or "@string/app_name"
@@ -1047,10 +1092,24 @@ index 2f513955f..e05c9e9be 100644
 +            "i686-linux-android": "x86",
 +            "x86_64-linux-android": "x64",
 +        }.get(target_triple, "Arm64")
-+        variant = f"{arch_string}Debug"
++        variant = f"{arch_string}{'Release' if android_release else 'Debug'}"
 +
 +        env = cast(dict[str, str], self.build_env())
-+        env["SERVO_TARGET_DIR"] = path.dirname(servo_binary)
++        # `servo_binary` is always `None` here, not a bug specific to this function --
++        # command_base.py's own `binary_selection` deliberately nulls it out for any
++        # "packaged" target (Android, OpenHarmony): "we can't run it directly... doesn't
++        # seem very useful" (see that file's own comment). Find `libservoshell.so`'s actual
++        # directory on disk instead, exactly the way `.github/workflows/android.yml`'s own
++        # `find target/<triple> -name libservoshell.so` does -- robust to whichever
++        # debug/release profile subdirectory Cargo actually used, unlike trying to
++        # reconstruct that name from `self.configure_build_type()` (which `bundle()`'s own
++        # decorator doesn't even hand this command in the first place -- see this method's
++        # call site in `bundle()` above).
++        so_matches = glob.glob(path.join(self.get_top_dir(), "target", target_triple, "**", "libservoshell.so"), recursive=True)
++        if not so_matches:
++            print(f"No libservoshell.so found under target/{target_triple}/ -- did `mach build --android` run first?")
++            return 1
++        env["SERVO_TARGET_DIR"] = path.dirname(so_matches[0])
 +
 +        # An absolute, top_dir-relative path -- unaffected by `build_root` being a scratch
 +        # copy rather than `apk_project_src` itself.
