@@ -5718,3 +5718,69 @@ there is no fourth silently-dropped customization lurking in the parts of the tr
 touches. (`resources/*`/`support/openharmony/*/media/*` also showed as differing, as
 expected and not a bug: those are binary/text-placeholder assets never patch-tracked in the
 first place — see the migration entry's own note — carried over by hand, not by any patch.)
+
+## 2026-09-11 — Strip the Android app down to a game shell: no browser chrome, no default-browser capability, no Settings/History screens
+
+**Files:** `support/android/apk/servoapp/src/main/AndroidManifest.xml`,
+`support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`,
+`support/android/apk/servoapp/src/main/res/values/strings.xml`; deleted entirely:
+`SettingsActivity.kt`, `HistoryActivity.kt`, `HistoryManager.kt`, `HistoryEntry.kt`,
+`HistoryItem.kt`, and the `arrow_back`/`arrow_forward`/`cancel`/`history`/`refresh`/
+`settings`/`delete` drawables under `res/drawable/`.
+
+**Patch:** `patches/servo-v0.5.0/0004-android.patch` (regenerated — replaces the
+`AndroidManifest.xml`/`MainActivity.kt` sections, adds new sections for `strings.xml` and each
+deleted file).
+
+**Upstream behavior:** `servoapp` is upstream Servo's own reference "servoshell" Android
+browser: `MainActivity`'s `Scaffold` had a full browser `topBar`/`bottomBar` (an address-bar
+`SearchBar`, back/forward/refresh buttons, a progress spinner, Settings/History icons), a
+`HistoryManager` persisting every visited URL to a JSON file, `SettingsActivity`/
+`HistoryActivity` screens, and `AndroidManifest.xml` declared two "Web browser intents"
+`<intent-filter>`s (`VIEW`/`BROWSABLE` for `http`/`https`/`file`/`data`/`javascript` schemes
+and `text/html` etc. mime types) — enough for Android to offer this app as a system browser
+and set-as-default-browser candidate. None of this was ever addressed when Android support was
+added to this fork (2026-08-31/09-01) — the equivalent desktop customization (removing the
+toolbar/tab strip so the *desktop* shell looks like a native app window, not a browser) is one
+of this fork's oldest changes (see the 2026-08-05 entry near the top of this file), but nobody
+ported that same intent to the Android target, since it's an entirely separate Kotlin/Android
+UI layer, not shared code.
+
+**Reported directly by a user** testing a real device build (2026-09-11): the app was
+installable as a browser choice (offered as a "set as default browser" option), showed a full
+address bar/back/forward/settings/history UI on top of the game content, and the game
+content itself failed to load with "Could not load the requested page: Opening file failed" —
+that last part turned out to be an unrelated, expected symptom (the specific APK tested had no
+bundled content — see the `mach bundle --android --content-dir` note already in
+`MainActivity.kt`'s own loadUri comment — not a new bug), but the browser-identity/chrome
+complaint was real and is what this entry fixes.
+
+**Change:**
+- `AndroidManifest.xml`: removed both "Web browser intents" `<intent-filter>` blocks and the
+  `SettingsActivity`/`HistoryActivity` `<activity>` declarations — only the plain
+  `MAIN`/`LAUNCHER` intent-filter remains, so this can no longer be offered as a browser or a
+  handler for arbitrary `VIEW` intents.
+- `MainActivity.kt`: `Scaffold`'s `topBar`/`bottomBar` (address bar, nav buttons, Settings/
+  History icons) removed entirely — the content view (`AndroidView` wrapping `servoView`) now
+  fills the whole screen edge to edge, the same "no browser chrome, ever" intent as the
+  desktop shell's own toolbar removal. `BackHandler`'s physical/gesture back-button behavior
+  (`servoView.goBack()`) is unchanged — that's an input handler, not visible chrome, and
+  wasn't part of what was reported. The now-dead `if (Intent.ACTION_VIEW == intent.action)`
+  branch (unreachable once the manifest no longer routes `VIEW` intents here) was removed too,
+  along with the "experimental features" `SharedPreferences` toggle (its only UI was the now-
+  deleted `SettingsActivity` — this fork already forces the equivalent Rust-side
+  `EXPERIMENTAL_PREFS` bundle on by default regardless, see the 2026-08-07 entry, so nothing
+  is lost by removing a second, redundant, Android-only toggle for it).
+- Deleted `SettingsActivity.kt`/`HistoryActivity.kt`/`HistoryManager.kt`/`HistoryEntry.kt`/
+  `HistoryItem.kt` outright (confirmed via grep: referenced nowhere outside each other and
+  `MainActivity.kt`), plus the 7 now-orphaned toolbar icon drawables (confirmed via grep: zero
+  remaining `R.drawable.*`/`R.string.*` references) — a real, if modest, APK size reduction,
+  not just dead-code removal for its own sake, per the user's own ask.
+
+**Verification:** re-diffed every one of the 15 touched/deleted files against a fresh pristine
+`v0.5.0` download, confirmed the regenerated patch reproduces the exact same result
+byte-for-byte (`diff --strip-trailing-cr`) for the 3 modified files and correctly deletes the
+other 12; the combined patch applies cleanly to pristine. No local Kotlin/Gradle toolchain to
+compile against (same standing gap as everywhere else in this file) — real verification is a
+CI Android build (`android.yml` or `roves-action`'s `build-android` job) actually installing
+and launching without browser chrome, pending as of this entry.
