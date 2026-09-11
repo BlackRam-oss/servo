@@ -5780,7 +5780,8 @@ complaint was real and is what this entry fixes.
 **Verification:** re-diffed every one of the 15 touched/deleted files against a fresh pristine
 `v0.5.0` download, confirmed the regenerated patch reproduces the exact same result
 byte-for-byte (`diff --strip-trailing-cr`) for the 3 modified files and correctly deletes the
-other 12; the combined patch applies cleanly to pristine. No local Kotlin/Gradle toolchain to
-compile against (same standing gap as everywhere else in this file) — real verification is a
-CI Android build (`android.yml` or `roves-action`'s `build-android` job) actually installing
-and launching without browser chrome, pending as of this entry.
+other 12; the combined patch applies cleanly to pristine (confirmed twice: once against each
+of the 15 files individually, once against a completely fresh full pristine `v0.5.0` download).
+`android.yml` (Gradle actually compiling `servoapp` with these Kotlin/manifest/resource
+changes) went green. Still not verified: an actual device install confirming no browser
+chrome/default-browser prompt shows up in practice, not just "it compiles."
