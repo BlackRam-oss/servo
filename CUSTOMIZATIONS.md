@@ -5700,8 +5700,21 @@ existing (correctly-patched) reference to resolve against — confirmed via real
 
 **Verification:** the regenerated patch applies cleanly to a fresh pristine `v0.5.0`
 extraction, and the applied result is byte-identical to the working tree (`diff
---strip-trailing-cr`). A full apply-every-patch-in-sequence-then-diff-the-whole-tree pass
-(the real end-to-end check for this kind of gap, not just per-file) was started but is slow
-against the ~1.3GB pristine tree on this machine — its result, if it surfaces anything further,
-belongs in a follow-up entry rather than blocking this fix from landing. Real CI re-run of
-`android.yml` against this commit is the actual verification, pending as of this entry.
+--strip-trailing-cr`). Real CI re-run of `android.yml` against this commit (v0.4.12) went
+green, confirming the fix for real, not just "the diff looks right."
+
+**Follow-up (2026-09-11): the full apply-every-patch-in-sequence-then-diff-the-whole-tree
+pass completed clean.** Applied every patch in `patches/servo-v0.5.0/` (as of the v0.4.12
+commit, including this entry's own fix and the two entries above it) to a completely fresh
+pristine `v0.5.0` extraction, then diffed the result against the actual working tree across
+`components/`, `ports/`, `python/`, `support/android/`, and `support/content-packer/` — every
+file any patch touches. 64 files showed a raw diff; all 64 were confirmed pure CRLF/LF noise
+(`diff --strip-trailing-cr` showed zero difference for every one), the same sandbox-`git
+apply`-normalizes-line-endings artifact as everywhere else in this file, not real content
+loss. Zero genuine content differences found. Combined with this same day's three real fixes
+(this entry, the prefs.rs entry, and the `windows_subsystem` entry above), this closes out the
+"is the v0.5.0 patch set actually complete" question this whole investigation was chasing —
+there is no fourth silently-dropped customization lurking in the parts of the tree any patch
+touches. (`resources/*`/`support/openharmony/*/media/*` also showed as differing, as
+expected and not a bug: those are binary/text-placeholder assets never patch-tracked in the
+first place — see the migration entry's own note — carried over by hand, not by any patch.)
