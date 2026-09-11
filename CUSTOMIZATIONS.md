@@ -5785,3 +5785,53 @@ of the 15 files individually, once against a completely fresh full pristine `v0.
 `android.yml` (Gradle actually compiling `servoapp` with these Kotlin/manifest/resource
 changes) went green. Still not verified: an actual device install confirming no browser
 chrome/default-browser prompt shows up in practice, not just "it compiles."
+
+**Correction (2026-09-11, same day, confirmed on a real device):** the browser-chrome removal
+above was real and worked as intended. But loading the game itself still failed --
+`file:///android_asset/www/index.html` (`MainActivity.kt`'s own `loadUri` call, present since
+Android support was first added, completely unrelated to this same-day's chrome removal)
+**never actually worked, with or without real bundled content.** See the next entry.
+
+## 2026-09-11 — Extract bundled content to a real file instead of loading `file:///android_asset/...` (never worked)
+
+**File:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`.
+
+**Patch:** `patches/servo-v0.5.0/0004-android.patch` (regenerated in place, same file section).
+
+**Upstream behavior:** N/A — `loadUri("file:///android_asset/www/index.html")` is this fork's
+own code, added when Android content-bundling was first built (2026-08-31 entry above), not
+inherited from upstream Servo.
+
+**The bug:** confirmed on a real device, with a real, verified-present bundled game
+(`pixi-vn-react-template`, built via `roves-action`'s own `build-android` CI job — `unzip -l`
+on the resulting `.apk` showed all 31 expected files including a valid `assets/www/index.html`):
+"Could not load the requested page: Opening file failed." Root cause, found by actually
+checking what handles a `file://` URL in this engine rather than assuming the Android
+convention just works: `ports/servoshell/desktop/protocols/file.rs` opens `file://` URLs with
+a plain `std::fs::File::open` — grepping the entire engine source confirms `android_asset`,
+`AAsset`, and `AssetManager` appear **nowhere** in `components/` or `ports/`. `android_asset`
+is a WebView/Chromium-specific virtual-path convention its own internal asset resolver
+understands; a generic POSIX file-open has no idea what it means and just fails, exactly as it
+would for any other nonexistent path — meaning this URI scheme could never have resolved to
+real content, on any build, regardless of whether `--content-dir` was ever provided. This
+went unnoticed for as long as it did because the *content-less* case (a plain engine-shell
+build, no bundled content) was expected to show exactly this same failure — see this same
+`MainActivity.kt`'s own comment predating this fix — so a real bundled build failing
+identically read as "business as usual" rather than a distinct, real bug, until someone
+actually tested one.
+
+**Change:** new `extractBundledContent`/`copyAssetTree` (in `MainActivity.kt`) copy the
+`assets/www/` tree out to `filesDir/www` (always private, always writable, no runtime
+permission needed) via Android's own `AssetManager` API the first time a given app build
+(tracked by `versionCode` in a marker file, so an update re-extracts) runs, then `loadUri`
+loads a real `file://` path from there instead. Mirrors the desktop shell's own "extract
+packed content once, then load a real path" shape (see the 2026-08-07/08 entries on that) --
+simpler here since Android's own `mach bundle` path has no compression step to reverse, just a
+plain asset-to-file copy.
+
+**Verification:** the regenerated patch applies cleanly to a fresh pristine `v0.5.0`
+extraction (confirmed against every file `0004-android.patch` now touches, not just this one).
+No local Kotlin/Gradle toolchain to compile against (same standing gap as every other Android
+change in this file) — real verification is a CI Android build compiling this successfully,
+and ultimately a real device actually loading the bundled game this time, both pending as of
+this entry.

@@ -6,6 +6,8 @@
 package org.servo.servoshell
 
 import android.app.AlertDialog
+import android.content.Context
+import android.content.res.AssetManager
 import android.graphics.Color
 import android.os.Bundle
 import android.system.ErrnoException
@@ -21,6 +23,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.getSystemService
 import org.servo.servoview.Servo
 import org.servo.servoview.ServoView
+import java.io.File
+import java.io.FileNotFoundException
 
 // Roves fork: upstream Servo's own reference "servoshell" browser UI (address bar, back/
 // forward/refresh buttons, a Settings screen, a History screen, and manifest intent-filters
@@ -84,11 +88,15 @@ class MainActivity : ComponentActivity(), Servo.Client {
         // No "open with" intent to handle -- the manifest's own LAUNCHER-only intent-filter
         // (see AndroidManifest.xml) means this activity is never started any other way. Load
         // whatever `mach bundle --android --content-dir` packed into the APK's own assets (see
-        // post_build_commands.py's `_bundle_android`), if anything was bundled at all. A plain
-        // engine-shell build with no bundled content (e.g. .github/workflows/android.yml's
-        // per-commit build) has no assets/www/index.html, so this 404s inside Servo itself --
-        // same as any other missing local file, no special-casing needed here.
-        servoView.loadUri("file:///android_asset/www/index.html")
+        // post_build_commands.py's `_bundle_android`), if anything was bundled at all -- via a
+        // real, extracted-once filesystem path, not `file:///android_asset/...` (see
+        // `extractBundledContent`'s own doc comment for why that never actually worked). A
+        // plain engine-shell build with no bundled content (e.g. .github/workflows/
+        // android.yml's per-commit build) extracts an empty `www/` tree, so this still 404s
+        // inside Servo itself the same as before -- same as any other missing local file, no
+        // special-casing needed here.
+        val contentDir = extractBundledContent(this, "www", File(filesDir, "www"))
+        servoView.loadUri("file://${File(contentDir, "index.html").absolutePath}")
     }
 
     override fun onDestroy() {
@@ -164,5 +172,63 @@ class MainActivity : ComponentActivity(), Servo.Client {
 
     override fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float) {
         Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
+    }
+}
+
+/**
+ * Copies the `assets/<assetRoot>/` tree Gradle bundles the game's own content into (see
+ * `servoapp/build.gradle.kts`/`post_build_commands.py`'s `_bundle_android`) out to a real,
+ * plain filesystem directory the first time this exact app build runs.
+ *
+ * This is necessary, not just a nice-to-have: Servo's own `file://` protocol handler
+ * (`ports/servoshell/desktop/protocols/file.rs`) is a plain `std::fs::File::open` -- it has no
+ * concept of Android's `android_asset` virtual path, a WebView-specific convention only
+ * Chromium's own asset resolver understands. `file:///android_asset/www/index.html` (this
+ * function's own predecessor) could therefore never resolve, with or without real bundled
+ * content -- confirmed directly against a real device: "Could not load the requested page:
+ * Opening file failed" on a build with real, verified-present bundled assets. Extracting once
+ * to `filesDir` (always private and writable, no runtime permission needed, unlike external
+ * storage) and loading a real `file://` path from there sidesteps the missing Android-asset
+ * support entirely, the same "extract once, then load a real path" shape the desktop shell's
+ * own packed-content cache already uses (see the engine's own `CUSTOMIZATIONS.md`, "Pack
+ * --content-dir into the APK" and "Single-executable bundle" entries) -- just simpler here,
+ * since Android's own `mach bundle` path has no compression step to reverse, only a plain
+ * asset-to-file copy.
+ *
+ * Skips the copy on a later launch of the *same* installed build (tracked via a marker file
+ * storing the app's own `longVersionCode`) -- an update (a new APK, a new `versionCode`) still
+ * re-extracts, so stale content from a previous install never lingers.
+ */
+private fun extractBundledContent(context: Context, assetRoot: String, destDir: File): File {
+    val marker = File(destDir.parentFile, "${destDir.name}.extracted-version")
+    val versionCode = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toString()
+    if (marker.isFile && marker.readText() == versionCode && destDir.isDirectory) {
+        return destDir
+    }
+    destDir.deleteRecursively()
+    copyAssetTree(context.assets, assetRoot, destDir)
+    marker.parentFile?.mkdirs()
+    marker.writeText(versionCode)
+    return destDir
+}
+
+/**
+ * Recursively copies one asset path into `destFile`. `AssetManager.list()`'s own return value
+ * for a *leaf* file (as opposed to a directory) isn't reliably documented across Android
+ * versions (empty array on some, an exception on others) -- trying `open()` first and treating
+ * a `FileNotFoundException` as "this was a directory, not a file" is the robust way to tell
+ * the two apart regardless.
+ */
+private fun copyAssetTree(assets: AssetManager, assetPath: String, destFile: File) {
+    try {
+        assets.open(assetPath).use { input ->
+            destFile.parentFile?.mkdirs()
+            destFile.outputStream().use { output -> input.copyTo(output) }
+        }
+    } catch (e: FileNotFoundException) {
+        destFile.mkdirs()
+        for (child in assets.list(assetPath) ?: emptyArray()) {
+            copyAssetTree(assets, "$assetPath/$child", File(destFile, child))
+        }
     }
 }
