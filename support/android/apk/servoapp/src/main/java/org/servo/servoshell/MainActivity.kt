@@ -21,6 +21,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.getSystemService
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.servo.servoview.Servo
 import org.servo.servoview.ServoView
 import java.io.File
@@ -42,6 +45,8 @@ class MainActivity : ComponentActivity(), Servo.Client {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        hideSystemBars()
 
         servoView = ServoView(this)
 
@@ -145,6 +150,24 @@ class MainActivity : ComponentActivity(), Servo.Client {
     public override fun onResume() {
         servoView.onResume()
         super.onResume()
+        // The system bars this hides can reappear on their own after the app loses and
+        // regains focus (a well-documented Android quirk with this API) -- re-applying here,
+        // not just once in `onCreate`, is what actually keeps them hidden across that.
+        hideSystemBars()
+    }
+
+    // A game, not a browser -- the Android status bar and navigation bar were still showing
+    // on top of it (reported directly by a user on a real device), never addressed when
+    // Android support was added, same gap as the browser chrome this file's own top comment
+    // already covers. `BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE` (rather than never showing them at
+    // all) still lets a player swipe from an edge to reveal them temporarily -- the standard
+    // Android "immersive" convention, not a fully locked-down kiosk mode.
+    private fun hideSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE
+        }
     }
 
     override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
@@ -218,12 +241,21 @@ private fun extractBundledContent(context: Context, assetRoot: String, destDir: 
  * versions (empty array on some, an exception on others) -- trying `open()` first and treating
  * a `FileNotFoundException` as "this was a directory, not a file" is the robust way to tell
  * the two apart regardless.
+ *
+ * `.html` files get their root-relative asset references (`src="/..."`, `href="/..."`) rewritten
+ * to be relative (`src="./..."`) on the way out -- see `ROOT_RELATIVE_ATTR` for why.
  */
 private fun copyAssetTree(assets: AssetManager, assetPath: String, destFile: File) {
     try {
-        assets.open(assetPath).use { input ->
+        if (destFile.name.endsWith(".html", ignoreCase = true)) {
+            val html = assets.open(assetPath).use { it.readBytes().toString(Charsets.UTF_8) }
             destFile.parentFile?.mkdirs()
-            destFile.outputStream().use { output -> input.copyTo(output) }
+            destFile.writeText(ROOT_RELATIVE_ATTR.replace(html) { "${it.groupValues[1]}=\"./" })
+        } else {
+            assets.open(assetPath).use { input ->
+                destFile.parentFile?.mkdirs()
+                destFile.outputStream().use { output -> input.copyTo(output) }
+            }
         }
     } catch (e: FileNotFoundException) {
         destFile.mkdirs()
@@ -232,3 +264,23 @@ private fun copyAssetTree(assets: AssetManager, assetPath: String, destFile: Fil
         }
     }
 }
+
+/**
+ * Matches `src="/foo"`/`href="/foo"` (a root-relative reference, the default a bundler like
+ * Vite emits) but not `src="//cdn.example.com/foo"` (protocol-relative, a real external host)
+ * or an already-relative/absolute-URL reference.
+ *
+ * Needed because the extracted content is loaded via a real `file://<path>/index.html` (see
+ * `extractBundledContent`'s own doc comment), and a `file://` document's root-relative
+ * references resolve against the *entire device filesystem* root, not the extracted
+ * directory -- unlike the desktop shell, which sidesteps this with its own `game://content/`
+ * virtual-origin protocol (see the engine's `ports/servoshell/desktop/protocols/game.rs`), not
+ * yet ported to the Android target (a real engine-level change, deliberately not attempted
+ * here -- see this repo's own `CUSTOMIZATIONS.md` for the full tradeoff). This regex-based
+ * rewrite is a narrower, lower-risk stand-in: it fixes the top-level HTML's own asset
+ * references (which is what was producing a fully blank white screen -- the page's very first
+ * `<script>` tag never loaded at all), but does *not* address a client-side router's own
+ * `location.pathname` matching at boot the way `game://` does -- a game using one may still
+ * show its own "not found" page instead of real content even after this fix.
+ */
+private val ROOT_RELATIVE_ATTR = Regex("""\b(src|href)="/(?!/)""")

@@ -169,6 +169,31 @@ fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
    `python/servo/platform/build_target.py`, indipendente dal problema Gradle — todo separato,
    non toccato da questo punto.
 
+## 7. Portare il protocollo `game://` anche su Android (fix "definitivo" del caricamento contenuto)
+
+**Stato: non affrontato, gap noto e documentato (2026-09-12).** Vedi `CUSTOMIZATIONS.md`,
+voce "Rewrite root-relative asset paths in the extracted HTML", per il contesto completo.
+
+Il contenuto Android oggi si carica via un vero `file://<percorso estratto>/index.html`
+(vedi `MainActivity.kt`), con un fix a livello di regex che riscrive i percorsi assoluti
+(`src="/..."`) in relativi per evitare la schermata bianca. Questo **non risolve** il secondo
+problema che `game://content/` risolve per desktop: un router lato client (history mode) vede
+`location.pathname` come il vero percorso del filesystem, non `/`, e può quindi mostrare la
+propria pagina "not found" invece del contenuto reale — non ancora confermato se questo si
+manifesti per davvero (serve un test reale su un gioco che usa un router, es.
+`pixi-vn-react-template`, che infatti ne usa uno).
+
+Il fix vero: spostare `ports/servoshell/desktop/protocols/game.rs` (e la sua dipendenza
+`packed_content.rs`) fuori dall'albero di moduli `desktop` (oggi `#[cfg(not(target_os =
+"android"))]`) in qualcosa che entrambi i target possano condividere, poi collegare
+`ServoBuilder::protocol_registry(...)` (l'estensione point esiste già, vedi
+`components/servo/servo.rs`) dentro `ports/servoshell/egl/app.rs`, che oggi costruisce solo
+un `ServoBuilder::default()` senza alcun registro personalizzato. Non tentato in questa
+sessione perché tocca codice condiviso con OpenHarmony, non verificabile localmente (nessun
+dispositivo/emulatore disponibile), e più rischioso del fix Kotlin-only già fatto — da
+affrontare con più tempo/cautela, idealmente dopo aver confermato se il problema del router
+si manifesta davvero.
+
 ## Note
 
 - Punto risolto nella sessione del 2026-08-06: stato di navigazione browser morto

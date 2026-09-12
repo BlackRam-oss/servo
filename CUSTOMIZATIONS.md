@@ -5835,3 +5835,86 @@ No local Kotlin/Gradle toolchain to compile against (same standing gap as every 
 change in this file) — real verification is a CI Android build compiling this successfully,
 and ultimately a real device actually loading the bundled game this time, both pending as of
 this entry.
+
+**Correction (2026-09-12, confirmed on a real device):** progress, not a full fix. The
+"Opening file failed" error is gone, but the real device instead showed a fully blank white
+screen — see the next entry. The status/navigation bars staying visible over the game (a
+second, unrelated issue reported in the same message) is covered in the entry after that.
+
+## 2026-09-12 — Rewrite root-relative asset paths in the extracted HTML (a real `game://`-on-Android port is the complete fix, not attempted here)
+
+**File:** `support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`
+(`copyAssetTree`'s new `.html` branch, and the new `ROOT_RELATIVE_ATTR` regex).
+
+**Patch:** `patches/servo-v0.5.0/0004-android.patch` (regenerated in place, same file section).
+
+**The bug:** confirmed on a real device: after the previous entry's fix, the game's own
+`index.html` loads (no more "Opening file failed"), but the screen was fully blank white.
+Root cause: `index.html` (this specific template, and any typical Vite-built SPA using the
+default `base: '/'`) references its own bundle with **root-relative** paths --
+`<script src="/assets/index-....js">`, `<link href="/assets/index-....css">`. Loaded via a
+real `file://<extracted-dir>/index.html` URL (the previous entry's own fix), a root-relative
+reference resolves against the *entire device filesystem's* root, not the extracted
+directory -- so the very first `<script>` tag 404s, no JS ever runs, and the page is
+permanently blank. This is the *exact* problem the desktop shell's own `game://content/`
+virtual-origin protocol (`ports/servoshell/desktop/protocols/game.rs`) exists to solve --
+see that file's own doc comment, "Root-absolute asset references... have the exact same
+underlying problem" -- but that protocol is only wired up for the desktop target
+(`ports/servoshell/desktop/` is `#[cfg(not(target_os = "android"))]`; the Android/OpenHarmony
+EGL app (`ports/servoshell/egl/app.rs`) builds a plain `ServoBuilder::default()` with no
+custom protocol registry at all) -- it was never ported to Android when Android support was
+added.
+
+**Change (a deliberately narrower stand-in, not the full port):** `.html` files get their
+`src="/...")`/`href="/...")` attributes rewritten to `src="./...")`/`href="./...")` at
+extraction time (a regex excluding protocol-relative `//host/...` references, which must stay
+untouched) -- fixes the specific symptom that produced a fully blank screen (the top-level
+script/stylesheet never loading at all).
+
+**What this does *not* fix, on record rather than silently assumed away:** a client-side
+router in "history" mode (React Router, TanStack Router, Vue Router, ...) still sees
+`location.pathname` as the real device filesystem path at boot, not `/` -- the *other* half of
+what `game://content/` solves (see that file's own doc comment on why booting at the root,
+not `/index.html`, matters for exactly this). A game using one may load its JS successfully
+after this fix and still show its own "not found" fallback instead of real content. The
+complete fix is porting `game://` (and its `PackedContent` dependency) out of the
+`desktop`-only module tree into something both targets can share, and wiring
+`ServoBuilder::protocol_registry(...)` into `egl/app.rs`'s own Android/OpenHarmony
+initialization -- a real, higher-risk engine change (touches code shared with OpenHarmony,
+unverifiable locally, and previously unexercised on this target at all) deliberately not
+attempted in this same sitting as the lower-risk, Kotlin-only fix above. Whoever picks this up
+next: `pixi-vn-react-template` (the real-world test case this was diagnosed against) does use
+a client-side router, so it's a good, real test case for confirming whether this residual gap
+actually manifests in practice, not just a theoretical concern.
+
+**Verification:** the regex's exact behavior was simulated against this template's real
+`index.html` content (Python's `re`, equivalent semantics for this pattern) before writing the
+Kotlin version -- correctly rewrites `src="/assets/..."`/`href="/favicon.ico"`/
+`href="/manifest.webmanifest"` while leaving `href="//external.example.com/..."`/
+`href="https://..."` untouched. The regenerated patch applies cleanly to a fresh pristine
+`v0.5.0` extraction. No local Kotlin toolchain — real verification is a CI Android build
+compiling this, and a real device confirming the screen is no longer blank, both pending.
+
+## 2026-09-12 — Hide the Android status/navigation bars (immersive mode)
+
+**File:** same `MainActivity.kt` as the two entries above (`hideSystemBars`, called from both
+`onCreate` and `onResume`).
+
+**The bug:** reported in the same real-device test as the two entries above: both the status
+bar and the navigation bar stayed visible on top of the game, another "looks like a browser/
+generic app, not a game" gap never addressed when Android support was added — same family of
+issue as the browser-chrome removal a day earlier, just a system-level UI layer instead of
+this app's own.
+
+**Change:** `WindowCompat.setDecorFitsSystemWindows(window, false)` +
+`WindowInsetsControllerCompat.hide(WindowInsetsCompat.Type.systemBars())`, with
+`BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE` (a player can still swipe from an edge to reveal them
+temporarily — standard Android "immersive" behavior, not a fully locked kiosk mode that would
+block that entirely). Re-applied in `onResume` too, not just `onCreate` — hidden system bars
+are well-documented to be able to reappear on their own after the app loses and regains focus.
+
+**Verification:** `androidx.core`'s `WindowCompat`/`WindowInsetsControllerCompat` APIs are
+already transitively available (this same file already imports
+`androidx.core.content.getSystemService`, from the same artifact) — no new Gradle dependency
+needed. No local Kotlin toolchain — real verification is a CI Android build compiling this,
+and a real device confirming the bars actually stay hidden, both pending.
