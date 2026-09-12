@@ -5965,6 +5965,17 @@ unconditional `headers` dependency — still builds correctly) both going green,
 the same real device confirming the PixiJS asset-loading error is gone, both pending as of
 this entry.
 
+**Correction (2026-09-12, later the same day):** the "the router problem never actually
+happened for the test game" claim above was wrong. Once this fix shipped (v0.4.16) and the
+PixiJS asset-loading error it targeted was gone, the real device's *next* screenshot showed a
+plain black screen reading "Not Found" — the exact router-fallback symptom this entry said
+didn't apply. It was never actually absent; it was masked by the more visually prominent
+asset-loading error being on top of it in the previous screenshot (a root-level loader/asset
+prefetch still runs and produces visible network activity even when no leaf route matches, so
+the app *looked* like it was doing something before this fix, for the wrong reason). The full
+`game://` port this entry talked itself out of is the real fix — see the next-but-one entry
+below, done immediately after this was confirmed.
+
 ## 2026-09-12 — Hide the Android status/navigation bars (immersive mode)
 
 **File:** same `MainActivity.kt` as the two entries above (`hideSystemBars`, called from both
@@ -5978,7 +5989,7 @@ this app's own.
 
 **Change:** `WindowCompat.setDecorFitsSystemWindows(window, false)` +
 `WindowInsetsControllerCompat.hide(WindowInsetsCompat.Type.systemBars())`, with
-`BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE` (a player can still swipe from an edge to reveal them
+`BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` (a player can still swipe from an edge to reveal them
 temporarily — standard Android "immersive" behavior, not a fully locked kiosk mode that would
 block that entirely). Re-applied in `onResume` too, not just `onCreate` — hidden system bars
 are well-documented to be able to reappear on their own after the app loses and regains focus.
@@ -5986,5 +5997,58 @@ are well-documented to be able to reappear on their own after the app loses and 
 **Verification:** `androidx.core`'s `WindowCompat`/`WindowInsetsControllerCompat` APIs are
 already transitively available (this same file already imports
 `androidx.core.content.getSystemService`, from the same artifact) — no new Gradle dependency
-needed. No local Kotlin toolchain — real verification is a CI Android build compiling this,
-and a real device confirming the bars actually stay hidden, both pending.
+needed. Initially shipped with a typo (`BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE`, missing "BARS") that
+`android.yml` caught as a real compile error — fixed and re-verified via CI before release.
+
+## 2026-09-12 — Port the full `game://content/` protocol to Android (the router fix the previous entry talked itself out of)
+
+**Files:** `ports/servoshell/protocols/{mod,game}.rs` (`game.rs` relocated here, verbatim,
+from `desktop/protocols/`, joining `file.rs`/`packed_content.rs` which already moved in the
+entry above), `ports/servoshell/desktop/protocols/mod.rs` (drops `game` too — nothing left in
+`desktop/protocols/` that's Android-relevant anymore), `ports/servoshell/desktop/app.rs` and
+`ports/servoshell/desktop/bundle_launch.rs` (`use` paths re-qualified to `crate::protocols::
+game`, no logic change), `ports/servoshell/egl/app.rs` (registers `game:` and boots at
+`game://content/` for any bundled launch, not just `file:`).
+
+**Patches:** `0002-desktop-protocols.patch` (drops `game.rs` entirely — nothing of it left
+under `desktop/protocols/`), and `0015-shared-file-protocol.patch` renamed to
+`0015-shared-content-protocols.patch` (now carries `protocols/game.rs` alongside `file.rs`/
+`packed_content.rs`, and the fuller `egl/app.rs` boot-URL logic below) — `0001` needed no
+further change beyond the previous entry's.
+
+**The bug (confirmed on a real device, see the correction above):** `egl/app.rs` was booting
+Android at the literal `file://<absolute path>/index.html` URL. Under that URL,
+`window.location.pathname` is the real OS path, never `/` — so a client-side history router
+(this test game uses one) can never match its own root route and falls back to its own "Not
+Found" page, exactly as documented in `ports/servoshell/desktop/protocols/game.rs`'s own doc
+comment and `desktop/bundle_launch.rs`'s `game_content_url` — a bug this project already hit
+and fixed *once*, for the desktop shell, in 2026-08-29 (see that entry) — Android was simply
+never given the same fix when it was added.
+
+**Why not just the `file:` rebase from the previous entry:** `rebase_to_content_root` only
+rewrites requests for individual *files* that fail to resolve (assets, sub-resources). It has
+no way to change what `location.pathname` the *document itself* was loaded at — the router
+problem isn't a missing asset, it's the top-level navigation URL having the wrong shape
+entirely. Only a real distinct origin (`game://content/`, `ImmutableOrigin::
+new_opaque_for_game_content`) makes `location.pathname` come out as `/` at boot.
+
+**Change:** relocated `game.rs` out of `desktop/protocols/` the same way `file.rs`/
+`packed_content.rs` already were, into the shared `protocols/` module (compiled for every
+target). `egl/app.rs`'s `App::new` now mirrors `desktop/bundle_launch.rs`'s own logic instead
+of only registering `file:`: it computes `initial_file_path` from the parsed initial URL (as
+before), but now also checks whether that resolves to a real file — if so, it registers
+`game:` too (`GameProtocolHandler::new(content_root, entry_html)`, content root = the file's
+parent directory) and overrides the boot URL to `game://content/` instead of the raw `file:`
+path; every other case (no bundled file, e.g. `about:blank`) falls back to the original
+`raw_initial_url` unchanged. `ServoBuilder` already had `protocol_registry()` as a builder
+method (used by `desktop/app.rs` already) — no new engine API needed.
+
+**Verification:** every touched/moved/added file re-diffed against a fresh pristine `v0.5.0`
+download (for the two files that exist upstream, `lib.rs`/`egl/app.rs`; `game.rs`/`mod.rs`
+are Roves-original, no upstream counterpart) and confirmed byte-identical to the working
+tree; `0002-desktop-protocols.patch` and `0015-shared-content-protocols.patch` (installed
+under its new name) both apply cleanly against fresh pristine in isolation. No two patches
+in `patches/servo-v0.5.0/` touch the same file, so there's no cross-patch ordering risk from
+this relocation. No local Rust toolchain — real verification is `android.yml` + `test.yml`
+both green, and ultimately the real device confirming the "Not Found" page is gone, both
+pending as of this entry.

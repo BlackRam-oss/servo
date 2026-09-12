@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use roves_content_packer::extract;
 
-use crate::desktop::protocols::game::CONTENT_HOST;
+use crate::protocols::game::CONTENT_HOST;
 
 const LAUNCH_CONFIG_FILE: &str = "launch.json";
 

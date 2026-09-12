@@ -5,12 +5,12 @@
 //! Protocol handlers shared between the desktop shell (`desktop/protocols/`, which has its
 //! own additional desktop-only handlers alongside these) and the Android/OpenHarmony EGL
 //! shell (`egl/app.rs`) -- unlike `desktop/protocols/`, this module isn't gated to any
-//! specific target. Moved out of `desktop/protocols/` (2026-09-12) specifically so
-//! `FileProtocolHandler`'s `rebase_to_content_root` fix (root-absolute asset references,
-//! the default virtually every bundler emits, resolving against the real OS filesystem root
-//! instead of the game's own content root under a bare `file:` URL) could be reused on
-//! Android instead of only ever existing for desktop -- see CUSTOMIZATIONS.md's 2026-09-12
-//! entry for the real-device bug this was ported to fix.
+//! specific target. Moved out of `desktop/protocols/` (2026-09-12) so both the `file:`
+//! rebasing fix and the full `game:` virtual-origin protocol could be reused on Android
+//! instead of only ever existing for desktop -- see CUSTOMIZATIONS.md's 2026-09-12 entries
+//! for the two real-device bugs this was ported to fix (root-absolute asset references, and
+//! a client-side router's own `location.pathname` matching at boot).
 
 pub(crate) mod file;
+pub(crate) mod game;
 pub(crate) mod packed_content;

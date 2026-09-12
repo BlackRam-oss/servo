@@ -169,10 +169,12 @@ fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
    `python/servo/platform/build_target.py`, indipendente dal problema Gradle — todo separato,
    non toccato da questo punto.
 
-## 7. Portare il protocollo `game://` anche su Android (il router lato client resta scoperto)
+## 7. Portare il protocollo `game://` anche su Android
 
-**Stato: parzialmente fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voce "Port `file:`'s
-content-root rebasing to Android", per il dettaglio completo.**
+**Stato: fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voci "Port `file:`'s content-root
+rebasing to Android" e "Port the full `game://content/` protocol to Android", per il dettaglio
+completo. In attesa di conferma finale su dispositivo reale + CI (`android.yml`/`test.yml`)
+prima di considerarlo definitivamente chiuso.**
 
 Il problema dei percorsi assoluti (`src="/assets/..."`) rotti sotto `file://` è stato risolto
 **a livello di motore, non più con un patch Kotlin a regex**: `ports/servoshell/desktop/
@@ -181,14 +183,15 @@ spostato in un nuovo modulo condiviso (`ports/servoshell/protocols/`) e collegat
 `egl/app.rs` (Android/OpenHarmony). Il fix a regex nell'HTML estratto (`MainActivity.kt`) resta
 presente ma è ridondante/superato, non rimosso.
 
-**Non ancora affrontato:** il *secondo* problema che il protocollo `game://content/` completo
-risolverebbe — un router lato client (history mode) vede `location.pathname` come il vero
-percorso del filesystem, non `/`, e potrebbe mostrare la propria pagina "not found" invece del
-contenuto reale. Testato con un gioco reale che usa un router (`pixi-vn-react-template`,
-TanStack Router) e **il problema non si è manifestato** — ma questo non è una garanzia
-generale per ogni router/configurazione possibile, solo un dato reale per QUESTO caso. Se
-riemergesse con un altro gioco, il fix vero resta portare anche `game.rs`/`GameProtocolHandler`
-(non solo il semplice fallback di `file.rs`) sullo stesso modulo condiviso.
+**Correzione rispetto alla nota precedente:** qui sotto era scritto che il problema del router
+lato client "non si è manifestato" per `pixi-vn-react-template` (TanStack Router). Era
+**sbagliato** — era solo mascherato dall'errore di caricamento asset più vistoso, visibile
+nello screenshot precedente. Una volta risolto quello (v0.4.16), lo screenshot successivo ha
+mostrato esattamente il sintomo previsto: schermo nero con testo "Not Found", la pagina di
+fallback del router. Il fix completo — portare anche `game.rs`/`GameProtocolHandler` (non solo
+il fallback di `file.rs`) sullo stesso modulo condiviso, e far avviare `egl/app.rs` su
+`game://content/` invece del `file://` letterale quando c'è un lancio bundled — è stato
+implementato nella stessa giornata.
 
 ## Note
 

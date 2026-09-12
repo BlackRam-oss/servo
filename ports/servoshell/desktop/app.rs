@@ -304,12 +304,12 @@ impl App {
         );
         // Only registered for a real bundled launch (`self.game_content` is `None` for
         // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see
-        // `protocols::game`'s own doc comment for why bundled content is served this
-        // way instead.
+        // `crate::protocols::game`'s own doc comment for why bundled content is served
+        // this way instead.
         if let Some((content_root, entry_html)) = self.game_content.clone() {
             let _ = protocol_registry.register(
                 "game",
-                protocols::game::GameProtocolHandler::new(content_root, entry_html),
+                crate::protocols::game::GameProtocolHandler::new(content_root, entry_html),
             );
         }
         // `@drincs/roves-api`'s `core`/`process` modules talk to this — see

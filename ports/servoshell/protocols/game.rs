@@ -29,19 +29,24 @@
 //! something novel to this fork.
 //!
 //! **Boot deliberately requests the root, not `/index.html` itself**
-//! (`bundle_launch.rs`'s `game_content_url`) — a client-side router matches
-//! its own root route against `/`, not against a literal `/index.html`,
-//! same as it would never match a hard-coded `/about.html`. The bundle's
-//! entry HTML is still what actually gets served for that request, via the
-//! exact same `Destination::Document`-no-matching-file fallback described
-//! below (`content_root` itself is a directory, so it "doesn't match" too)
-//! — booting at `/index.html` instead served identical bytes but left every
+//! (`desktop/bundle_launch.rs`'s `game_content_url`, and `egl/app.rs`'s own
+//! equivalent boot-URL logic) — a client-side router matches its own root
+//! route against `/`, not against a literal `/index.html`, same as it would
+//! never match a hard-coded `/about.html`. The bundle's entry HTML is still
+//! what actually gets served for that request, via the exact same
+//! `Destination::Document`-no-matching-file fallback described below
+//! (`content_root` itself is a directory, so it "doesn't match" too) —
+//! booting at `/index.html` instead served identical bytes but left every
 //! such router unable to match anything at boot, immediately falling back
 //! to its own "not found" page. That failure was easy to miss from logs
 //! alone: a *root-level* route loader (data preloading, asset prefetch)
 //! still runs even when no *leaf* route matches, so network requests kept
 //! firing normally while the actual visible page was nothing but the
-//! router's own unstyled "Not Found" fallback the whole time.
+//! router's own unstyled "Not Found" fallback the whole time — confirmed
+//! twice now, once on desktop and once on Android after `file.rs`'s own
+//! rebase fix was ported there (see CUSTOMIZATIONS.md's 2026-09-12 entries):
+//! fixing the asset-loading half alone just made the *other* half's exact
+//! same "Not Found" page fully visible instead of masked by an asset error.
 //!
 //! A **direct navigation** to a sub-route (a hard reload while on
 //! `game://content/about`, or `location.href = "/about"`) has no
@@ -54,10 +59,11 @@
 //! silently becoming HTML.
 //!
 //! Registered only for the fixed authority `content` — `mach bundle`/
-//! Packmaster/`roves-action` are the only things that ever construct a
-//! `game:` URL (see `bundle_launch.rs`), always with that exact host, so
-//! anything else reaching this handler is a bug elsewhere, not a real
-//! request. `file.rs`'s own on-demand packed-content extraction
+//! Packmaster/`roves-action` (desktop) and `MainActivity.kt`'s own extracted
+//! launch (Android/OpenHarmony, via `egl/app.rs`) are the only things that
+//! ever construct a `game:` URL, always with that exact host, so anything
+//! else reaching this handler is a bug elsewhere, not a real request.
+//! `file.rs`'s own on-demand packed-content extraction
 //! (`packed_content::PackedContent`) is reused as-is — this handler serves
 //! the same on-disk content, just addressed differently.
 
@@ -76,12 +82,12 @@ use servo::protocol_handler::{
 };
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::protocols::packed_content::PackedContent;
+use super::packed_content::PackedContent;
 
 /// The only authority this handler ever serves — see this module's own doc comment.
-/// `pub(crate)` so `bundle_launch.rs` can build the exact same `game://<CONTENT_HOST>/...`
-/// URLs this handler expects, from one shared source of truth instead of two copies of
-/// the literal that could silently drift apart.
+/// `pub(crate)` so `bundle_launch.rs`/`egl/app.rs` can build the exact same
+/// `game://<CONTENT_HOST>/...` URLs this handler expects, from one shared source of truth
+/// instead of separate copies of the literal that could silently drift apart.
 pub(crate) const CONTENT_HOST: &str = "content";
 
 pub struct GameProtocolHandler {
@@ -101,7 +107,8 @@ impl GameProtocolHandler {
     }
 
     /// See `PackedContent::ensure_available` — a no-op when this launch has no
-    /// managed packed content at all (`--content-compress=none`).
+    /// managed packed content at all (`--content-compress=none`, or the Android/
+    /// OpenHarmony target, which has no packed-content support at all yet).
     fn ensure_available(&self, file_path: &Path) {
         if let Some(packed) = &self.packed {
             packed.ensure_available(file_path);

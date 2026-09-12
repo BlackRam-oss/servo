@@ -198,7 +198,7 @@ index 918273cb8..a640e3854 100644
      // Passing a version script allows us to inform the linker about required
      // symbol visibility (only one), which improves stripping of unused sections.
 diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
-index b3092ada0..6d5dc293a 100644
+index b3092ada0..8661b911c 100644
 --- a/ports/servoshell/desktop/app.rs
 +++ b/ports/servoshell/desktop/app.rs
 @@ -4,24 +4,27 @@
@@ -503,12 +503,12 @@ index b3092ada0..6d5dc293a 100644
 +        );
 +        // Only registered for a real bundled launch (`self.game_content` is `None` for
 +        // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see
-+        // `protocols::game`'s own doc comment for why bundled content is served this
-+        // way instead.
++        // `crate::protocols::game`'s own doc comment for why bundled content is served
++        // this way instead.
 +        if let Some((content_root, entry_html)) = self.game_content.clone() {
 +            let _ = protocol_registry.register(
 +                "game",
-+                protocols::game::GameProtocolHandler::new(content_root, entry_html),
++                crate::protocols::game::GameProtocolHandler::new(content_root, entry_html),
 +            );
 +        }
 +        // `@drincs/roves-api`'s `core`/`process` modules talk to this — see
@@ -752,7 +752,7 @@ index b3092ada0..6d5dc293a 100644
      if let Some(userscripts_directory) = &userscripts_directory {
 diff --git a/ports/servoshell/desktop/bundle_launch.rs b/ports/servoshell/desktop/bundle_launch.rs
 new file mode 100644
-index 000000000..5693b5eef
+index 000000000..7a7afed01
 --- /dev/null
 +++ b/ports/servoshell/desktop/bundle_launch.rs
 @@ -0,0 +1,217 @@
@@ -790,7 +790,7 @@ index 000000000..5693b5eef
 +
 +use roves_content_packer::extract;
 +
-+use crate::desktop::protocols::game::CONTENT_HOST;
++use crate::protocols::game::CONTENT_HOST;
 +
 +const LAUNCH_CONFIG_FILE: &str = "launch.json";
 +

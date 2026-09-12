@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 
 use dpi::PhysicalSize;
@@ -307,8 +308,8 @@ pub struct App {
 impl App {
     #[servo::servo_tracing::instrument(skip_all, name = "App::new", level = "info")]
     pub(super) fn new(init: AppInitOptions) -> Rc<Self> {
-        let initial_url = init.initial_url.and_then(|string| Url::parse(&string).ok());
-        let initial_url = initial_url
+        let raw_initial_url = init.initial_url.and_then(|string| Url::parse(&string).ok());
+        let raw_initial_url = raw_initial_url
             .or_else(|| Url::parse(&init.servoshell_preferences.homepage).ok())
             .or_else(|| Url::parse("about:blank").ok())
             .expect("Failed to parse initial URL");
@@ -322,12 +323,38 @@ impl App {
         // plain `file:` URL this shell boots at. See `crate::protocols::file`'s own doc
         // comment, and CUSTOMIZATIONS.md's 2026-09-12 entry for the real-device bug this
         // was ported from desktop to fix here too.
-        let initial_file_path = initial_url.to_file_path().ok();
+        let initial_file_path = raw_initial_url.to_file_path().ok();
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
             "file",
             crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
         );
+
+        // Every Android/OpenHarmony launch is a bundled-game launch -- `MainActivity.kt`
+        // always passes a `file:` URL to a real, already-extracted entry HTML (there's no
+        // "raw dev --url" mode here the way desktop has). When that resolves to a real file,
+        // boot at the `game:` virtual root instead of the literal `file:` path -- confirmed
+        // necessary on a real device, the *other* half of the same bug the `file:`
+        // registration above fixes: a client-side history router's own `location.pathname`
+        // matching at boot only works against `/`, never a real OS path, so a bundled game
+        // using one (this exact fork's own test case did) fell back to its own "Not Found"
+        // page -- masked at first by the now-fixed asset-loading error, then fully visible
+        // once that was fixed. See `crate::protocols::game`'s own doc comment for the full
+        // explanation (this mirrors `desktop/bundle_launch.rs`'s own `game_content_url`
+        // logic) and CUSTOMIZATIONS.md's 2026-09-12 entry for this specific fix.
+        let bundled_content = initial_file_path.as_deref().filter(|path| path.is_file()).and_then(|path| {
+            Some((path.parent()?.to_path_buf(), path.file_name()?.to_string_lossy().into_owned()))
+        });
+        let initial_url = if let Some((content_root, entry_html)) = bundled_content {
+            let _ = protocol_registry.register(
+                "game",
+                crate::protocols::game::GameProtocolHandler::new(content_root, entry_html),
+            );
+            Url::parse(&format!("game://{}/", crate::protocols::game::CONTENT_HOST))
+                .expect("game: URL is always well-formed")
+        } else {
+            raw_initial_url
+        };
 
         let servo_builder = ServoBuilder::default()
             .opts(init.opts)
