@@ -159,14 +159,14 @@ class MainActivity : ComponentActivity(), Servo.Client {
     // A game, not a browser -- the Android status bar and navigation bar were still showing
     // on top of it (reported directly by a user on a real device), never addressed when
     // Android support was added, same gap as the browser chrome this file's own top comment
-    // already covers. `BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE` (rather than never showing them at
+    // already covers. `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` (rather than never showing them at
     // all) still lets a player swipe from an edge to reveal them temporarily -- the standard
     // Android "immersive" convention, not a fully locked-down kiosk mode.
     private fun hideSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).let { controller ->
             controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BY_SWIPE
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
 
