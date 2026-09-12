@@ -75,6 +75,7 @@ crossbeam-channel = { workspace = true }
 dpi = { workspace = true }
 env_logger = { workspace = true }
 euclid = { workspace = true }
+headers = { workspace = true }
 hitrace = { workspace = true, optional = true }
 http = { workspace = true }
 image = { workspace = true }
@@ -131,7 +132,6 @@ egui-winit = { workspace = true, features = ["accesskit", "clipboard", "wayland"
 egui_glow = { workspace = true, features = ["winit"] }
 gilrs = { workspace = true }
 glow = { workspace = true }
-headers = { workspace = true }
 serde_json = { workspace = true }
 # For optional feature servo-allocator/use-system-allocator and servo-allocator/allocation-tracking
 servo-allocator = { workspace = true }

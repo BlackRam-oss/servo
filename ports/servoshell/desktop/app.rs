@@ -294,10 +294,13 @@ impl App {
         // Takes over from the engine's own internal `file:` handler — see
         // `components/servo/servo.rs`'s protocol-registry merge-order change,
         // without which this registration would silently be discarded.
+        // `crate::protocols` (not the `desktop`-only `protocols` aliased above), since
+        // `egl/app.rs` needs to register this exact same handler too — see that module's
+        // own doc comment.
         let initial_file_path = self.initial_url.as_url().to_file_path().ok();
         let _ = protocol_registry.register(
             "file",
-            protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
+            crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
         );
         // Only registered for a real bundled launch (`self.game_content` is `None` for
         // a dev `--url`/drag-drop run, which keeps using `file:` above directly) — see

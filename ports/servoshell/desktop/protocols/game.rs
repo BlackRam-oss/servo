@@ -76,7 +76,7 @@ use servo::protocol_handler::{
 };
 use tokio::sync::mpsc::unbounded_channel;
 
-use super::packed_content::PackedContent;
+use crate::protocols::packed_content::PackedContent;
 
 /// The only authority this handler ever serves — see this module's own doc comment.
 /// `pub(crate)` so `bundle_launch.rs` can build the exact same `game://<CONTENT_HOST>/...`

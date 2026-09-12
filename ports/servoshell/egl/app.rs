@@ -9,6 +9,7 @@ use euclid::{Rect, Scale};
 use keyboard_types::{CompositionEvent, CompositionState, Key, KeyState, NamedKey};
 use log::{info, warn};
 use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
+use servo::protocol_handler::ProtocolRegistry;
 use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
@@ -306,19 +307,36 @@ pub struct App {
 impl App {
     #[servo::servo_tracing::instrument(skip_all, name = "App::new", level = "info")]
     pub(super) fn new(init: AppInitOptions) -> Rc<Self> {
-        let mut servo_builder = ServoBuilder::default()
-            .opts(init.opts)
-            .preferences(init.preferences.clone())
-            .event_loop_waker(init.event_loop_waker.clone());
-        let servo = servo_builder.build();
-        #[cfg(feature = "webxr")]
-        servo.register_webxr_registry(Box::new(XrDiscoveryWebXrRegistry::new(init.xr_discovery)));
-
         let initial_url = init.initial_url.and_then(|string| Url::parse(&string).ok());
         let initial_url = initial_url
             .or_else(|| Url::parse(&init.servoshell_preferences.homepage).ok())
             .or_else(|| Url::parse("about:blank").ok())
             .expect("Failed to parse initial URL");
+
+        // Same `file:` registration as the desktop shell (see `desktop/app.rs`) -- takes
+        // over from the engine's own internal handler so a root-absolute asset reference
+        // (`<script src="/assets/foo.js">`, the default virtually every bundler emits)
+        // rebases onto the game's own content root instead of failing against the real OS
+        // filesystem root. Confirmed necessary on a real device: without this, a bundled
+        // game's own JS/CSS/image references (not just its top-level HTML) 404 under the
+        // plain `file:` URL this shell boots at. See `crate::protocols::file`'s own doc
+        // comment, and CUSTOMIZATIONS.md's 2026-09-12 entry for the real-device bug this
+        // was ported from desktop to fix here too.
+        let initial_file_path = initial_url.to_file_path().ok();
+        let mut protocol_registry = ProtocolRegistry::default();
+        let _ = protocol_registry.register(
+            "file",
+            crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
+        );
+
+        let servo_builder = ServoBuilder::default()
+            .opts(init.opts)
+            .preferences(init.preferences.clone())
+            .protocol_registry(protocol_registry)
+            .event_loop_waker(init.event_loop_waker.clone());
+        let servo = servo_builder.build();
+        #[cfg(feature = "webxr")]
+        servo.register_webxr_registry(Box::new(XrDiscoveryWebXrRegistry::new(init.xr_discovery)));
 
         let user_content_manager = Rc::new(UserContentManager::new(&servo));
         let state = Rc::new(RunningAppState::new(

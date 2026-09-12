@@ -5895,6 +5895,76 @@ Kotlin version -- correctly rewrites `src="/assets/..."`/`href="/favicon.ico"`/
 `v0.5.0` extraction. No local Kotlin toolchain — real verification is a CI Android build
 compiling this, and a real device confirming the screen is no longer blank, both pending.
 
+**Correction (2026-09-12, same day): this narrow stand-in wasn't enough, and was superseded
+by a real engine-level fix the same day.** Confirmed on the same real device: after this fix,
+the page rendered and its own client-side router worked fine (the residual gap flagged above
+never actually manifested for this template) — but a *runtime-generated* asset reference from
+the game's own JS (`[Loader.load] Failed to load file:///assets/images/main-menu-....webp`,
+a PixiJS resource loader call, not anything in the static HTML this entry's regex could ever
+see) hit the exact same root-relative-path problem one level deeper. A text-rewrite approach
+can never fully close this class of bug — JS can reference paths from string concatenation,
+template literals, or a bundler-embedded manifest, none of which a regex over the *shipped*
+files can reliably catch. See the next entry for the real fix this prompted: porting the
+already-proven desktop `rebase_to_content_root` mechanism to Android at the protocol level
+instead of patching individual files. The `.html`-rewrite code in this entry is **superseded,
+not removed** — it's still harmless/inert (a plain relative path is still a plain relative
+path once the real fix makes `file://` resolution itself correct), so it was left in place
+rather than torn out for a one-day-old feature; a future cleanup pass could remove it once the
+protocol-level fix has more real-world mileage.
+
+## 2026-09-12 — Port `file:`'s content-root rebasing to Android (the real fix, not the HTML-only stand-in two entries up)
+
+**Files:** `ports/servoshell/Cargo.toml` (`headers` moved to an unconditional dependency),
+`ports/servoshell/lib.rs` (new `mod protocols;`), `ports/servoshell/protocols/{mod,file,
+packed_content}.rs` (**new module** — relocated from `desktop/protocols/`, verbatim, see
+below), `ports/servoshell/desktop/protocols/{mod,game}.rs` (updated `use` paths only, no
+logic change), `ports/servoshell/desktop/app.rs` (one `use` path qualified), `ports/servoshell/
+egl/app.rs` (new `file:` protocol registration).
+
+**Patches:** `patches/servo-v0.5.0/0001-desktop-shell-core.patch` (Cargo.toml, desktop/app.rs),
+`0002-desktop-protocols.patch` (desktop/protocols/{mod,game}.rs — and no longer carries
+`file.rs`/`packed_content.rs`, which moved out), and a **new**
+`0015-shared-file-protocol.patch` (lib.rs, the new `protocols/` module, egl/app.rs).
+
+**Why the real fix was smaller than expected:** the previous entry considered porting the
+full `game://content/` virtual-origin protocol to Android (the complete fix for *both*
+root-relative asset paths *and* a client-side router's `location.pathname` mismatch at boot)
+and deliberately didn't attempt it — bigger, touches code shared with OpenHarmony, higher
+risk. But the real device test that day showed the router problem never actually happened for
+the test game — only asset-path resolution did. Re-reading `ports/servoshell/desktop/
+protocols/file.rs` (Servo's own plain `file:` handler, not `game:`) found it already has a
+`rebase_to_content_root` fallback solving *exactly* the asset-path half, on its own, already
+proven in production for the desktop shell — a much smaller, lower-risk change than the full
+`game://` port: no virtual origin, no SPA-fallback-to-entry-HTML logic, just "if the literal
+path doesn't resolve, retry it relative to the initial launch URL's own directory instead of
+the OS filesystem root." `file.rs`/`packed_content.rs` had zero desktop-specific dependencies
+(confirmed by reading both files fully) — the only real blocker was `headers` (used by
+`file.rs` for HTTP Range support) being gated to `not(any(target_os = "android", target_env =
+"ohos"))` in `Cargo.toml`; moved to the unconditional dependency block instead.
+
+**Change:** relocated `file.rs`/`packed_content.rs` verbatim from `desktop/protocols/`
+(`#[cfg(not(any(target_os = "android", target_env = "ohos")))]`, so never compiled for
+Android at all) to a new crate-root `protocols` module compiled for every target — `game.rs`
+(which stays desktop-only; the *other*, harder half of this fix, still not attempted) updated
+to import `PackedContent` from the new location. `egl/app.rs`'s `App::new` — which builds a
+plain `ServoBuilder::default()` with no protocol registry at all today — now computes an
+`initial_file_path` from its own parsed `initial_url` (moved earlier in the function for this)
+and registers `crate::protocols::file::FileProtocolHandler::new(...)` on the builder before
+`.build()`, mirroring `desktop/app.rs`'s own registration of the same handler exactly.
+`PackedContent::resolve` already returns `None` harmlessly on Android (no `--content-compress`
+support in `mach bundle --android` yet, so no `.roves-content-source` marker it looks for is
+ever written there) — this port doesn't change that, only makes the *rebasing* fallback (which
+doesn't depend on packed content at all) available too.
+
+**Verification:** every touched/moved/added file re-diffed against a fresh pristine `v0.5.0`
+download and confirmed byte-identical to the working tree; all three regenerated/new patches
+apply cleanly in isolation. No local Rust toolchain to compile against (standing gap, see
+this file's other entries) — real verification is `android.yml` and `test.yml` (to confirm
+the `desktop` target — which this change also touches via the `use` path fix and the newly-
+unconditional `headers` dependency — still builds correctly) both going green, and ultimately
+the same real device confirming the PixiJS asset-loading error is gone, both pending as of
+this entry.
+
 ## 2026-09-12 — Hide the Android status/navigation bars (immersive mode)
 
 **File:** same `MainActivity.kt` as the two entries above (`hideSystemBars`, called from both

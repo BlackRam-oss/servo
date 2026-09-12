@@ -1,0 +1,403 @@
+diff --git a/ports/servoshell/lib.rs b/ports/servoshell/lib.rs
+index 399e0c4fc..ad8454698 100644
+--- a/ports/servoshell/lib.rs
++++ b/ports/servoshell/lib.rs
+@@ -19,6 +19,7 @@ mod egl;
+ mod panic_hook;
+ mod parser;
+ mod prefs;
++mod protocols;
+ #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+ mod resources;
+ mod running_app_state;
+diff --git a/ports/servoshell/protocols/mod.rs b/ports/servoshell/protocols/mod.rs
+new file mode 100644
+index 000000000..5c55ef24d
+--- /dev/null
++++ b/ports/servoshell/protocols/mod.rs
+@@ -0,0 +1,16 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Protocol handlers shared between the desktop shell (`desktop/protocols/`, which has its
++//! own additional desktop-only handlers alongside these) and the Android/OpenHarmony EGL
++//! shell (`egl/app.rs`) -- unlike `desktop/protocols/`, this module isn't gated to any
++//! specific target. Moved out of `desktop/protocols/` (2026-09-12) specifically so
++//! `FileProtocolHandler`'s `rebase_to_content_root` fix (root-absolute asset references,
++//! the default virtually every bundler emits, resolving against the real OS filesystem root
++//! instead of the game's own content root under a bare `file:` URL) could be reused on
++//! Android instead of only ever existing for desktop -- see CUSTOMIZATIONS.md's 2026-09-12
++//! entry for the real-device bug this was ported to fix.
++
++pub(crate) mod file;
++pub(crate) mod packed_content;
+diff --git a/ports/servoshell/protocols/file.rs b/ports/servoshell/protocols/file.rs
+new file mode 100644
+index 000000000..8bfb25e1a
+--- /dev/null
++++ b/ports/servoshell/protocols/file.rs
+@@ -0,0 +1,214 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! `file:` protocol handler — replicates Servo's own upstream behavior
++//! (plain filesystem reads, HTTP Range support) with one addition: if the
++//! requested path doesn't exist yet *and* falls under a directory known to
++//! hold lazily-extracted packed game content, it's extracted on demand —
++//! from whichever `.pack` archive contains it — before the read proceeds.
++//! See `support/content-packer` and CUSTOMIZATIONS.md's content-compression
++//! entries for the full design.
++//!
++//! Registered for the `file` scheme in `desktop/app.rs` and `egl/app.rs` alike, taking
++//! over from the engine's own internal default — see `components/servo/servo.rs`'s
++//! protocol-registry merge-order change, without which an embedder can't override `file`
++//! at all. Lives in this crate-root `protocols` module (not `desktop/protocols/`, despite
++//! everything else about this file being desktop-vintage) specifically so both shells can
++//! share it — see this module's own `mod.rs` doc comment.
++//!
++//! Deliberately does **not** replicate the stock handler's directory-listing
++//! fallback (`local_directory_listing`): Roves never opens more than one
++//! `file://` document and never navigates to a bare directory (no address
++//! bar, no tabs), so that upstream-only code path doesn't apply here and
++//! isn't worth the extra `pub(crate)`-visibility patch to `components/net`
++//! it would need. A directory request just becomes a network error instead.
++
++use std::fs::File;
++use std::future::{Future, ready};
++use std::io::{BufReader, Seek, SeekFrom};
++use std::path::{Component, Path, PathBuf};
++use std::pin::Pin;
++
++use headers::{ContentLength, ContentRange, ContentType, HeaderMapExt, Range};
++use http::Method;
++use servo::protocol_handler::{
++    DoneChannel, FetchContext, FILE_CHUNK_SIZE, NetworkError, ProtocolHandler, Request,
++    ResourceFetchTiming, Response, ResponseBody, get_range_request_bounds, partial_content,
++    range_not_satisfiable_error,
++};
++use tokio::sync::mpsc::unbounded_channel;
++
++use super::packed_content::PackedContent;
++
++pub struct FileProtocolHandler {
++    /// The directory containing the document Roves was launched with — the effective
++    /// content "root" a root-absolute reference gets rebased onto when it doesn't
++    /// resolve for real (see `rebase_to_content_root`). Independent of `packed`: this is
++    /// set for every launch that has an initial path at all, packed content or not.
++    initial_dir: Option<PathBuf>,
++    packed: Option<PackedContent>,
++}
++
++impl FileProtocolHandler {
++    /// `initial_file_path`: the local path the engine was told to open —
++    /// i.e. the resolved initial `file:` URL's path. Its directory doubles as
++    /// this session's content root (`initial_dir`, `rebase_to_content_root`)
++    /// and as where to look for a `.roves-content-source` marker (written by
++    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) — present only
++    /// for a packed-content launch; absent for one opened via raw CLI args
++    /// for local dev/testing, or a build with `--content-compress=none`.
++    pub fn new(initial_file_path: Option<&Path>) -> Self {
++        let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
++        let packed = initial_dir.as_deref().and_then(PackedContent::resolve);
++        Self { initial_dir, packed }
++    }
++
++    /// See `PackedContent::ensure_available` — a no-op when this launch has no
++    /// managed packed content at all (a dev `--url` run, or `--content-compress=none`).
++    fn ensure_available(&self, file_path: &Path) {
++        if let Some(packed) = &self.packed {
++            packed.ensure_available(file_path);
++        }
++    }
++
++    /// If `file_path` doesn't exist as given, tries it again as though it had been
++    /// requested root-relative to this session's own content root (`initial_dir`)
++    /// instead of the real OS filesystem root. Per the URL spec, `<script src="/foo.js">`
++    /// on a document loaded from a bare `file:` URL (rather than served over http(s)
++    /// from an actual domain root) resolves to `file:///foo.js` — `C:\foo.js` on Windows,
++    /// `/foo.js` on Linux/macOS — exactly what any browser does for a `file://`
++    /// document, and exactly the footgun this exists to route around: virtually every
++    /// bundler (Vite, webpack, ...) emits root-absolute asset references by default, and
++    /// a game's content root is never actually the OS filesystem root. Only ever
++    /// consulted as a fallback, after the literal path already failed to resolve — a
++    /// request that already resolves for real (a genuine OS-root file, vanishingly
++    /// unlikely to collide with a game's own asset name) is left untouched.
++    fn rebase_to_content_root(&self, file_path: &Path) -> Option<PathBuf> {
++        let root = self.initial_dir.as_deref()?;
++        let relative: PathBuf = file_path
++            .components()
++            .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
++            .collect();
++        if relative.as_os_str().is_empty() {
++            return None;
++        }
++        Some(root.join(relative))
++    }
++}
++
++impl ProtocolHandler for FileProtocolHandler {
++    // Both default to `false` on `ProtocolHandler` (see components/net/protocols/mod.rs) --
++    // fine for a protocol handler nobody's meant to treat as the app's own trusted origin,
++    // but this one *is* that origin: every Roves game is a `file:` document, and the engine
++    // registers this handler in place of Servo's own built-in `file:` support specifically
++    // so it's the one deciding this. Leaving both at their default `false` silently broke
++    // real games: `is_secure() == false` fails Worker/`blob:` mixed-content checks (a page
++    // loaded via `file:` was refusing to spawn its own Worker scripts, "Blocked as mixed
++    // content", hanging any code waiting on a message back from one -- confirmed via a real
++    // game whose loading screen never advanced past "loading" for exactly this reason), and
++    // `is_fetchable() == false` would equally break a game's own `fetch()` calls for its own
++    // bundled JSON/data assets.
++    fn is_fetchable(&self) -> bool {
++        true
++    }
++
++    fn is_secure(&self) -> bool {
++        true
++    }
++
++    fn load<'a>(
++        &'a self,
++        request: &'a mut Request,
++        done_chan: &mut DoneChannel,
++        context: &FetchContext,
++    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
++        let url = request.current_url();
++
++        if request.method != Method::GET {
++            return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++        }
++
++        let response = if let Ok(mut file_path) = url.to_file_path() {
++            self.ensure_available(&file_path);
++            if !file_path.exists() &&
++                let Some(rebased) = self.rebase_to_content_root(&file_path)
++            {
++                self.ensure_available(&rebased);
++                if rebased.exists() {
++                    file_path = rebased;
++                }
++            }
++
++            if file_path.is_dir() {
++                return Box::pin(ready(Response::network_error(NetworkError::ResourceLoadError(
++                    "Directory listing is not supported".to_owned(),
++                ))));
++            }
++
++            if let Ok(file) = File::open(file_path.clone()) {
++                let file_size = file.metadata().ok().map(|metadata| metadata.len());
++
++                let mut response =
++                    Response::new(url, ResourceFetchTiming::new(request.timing_type()));
++
++                let range_header = request.headers.typed_get::<Range>();
++                let is_range_request = range_header.is_some();
++                let Ok(range) = get_range_request_bounds(range_header, file_size.unwrap_or(0))
++                    .get_final(file_size)
++                else {
++                    range_not_satisfiable_error(&mut response);
++                    return Box::pin(ready(response));
++                };
++                let mut reader = BufReader::with_capacity(FILE_CHUNK_SIZE, file);
++                if reader.seek(SeekFrom::Start(range.start as u64)).is_err() {
++                    return Box::pin(ready(Response::network_error(NetworkError::InvalidMethod)));
++                }
++
++                if is_range_request {
++                    partial_content(&mut response);
++                }
++
++                let end_byte = range.end.map(|e| e as u64).or(file_size);
++                if let Some(end_byte) = end_byte {
++                    let start_byte = range.start as u64;
++                    response
++                        .headers
++                        .typed_insert(ContentLength(end_byte - start_byte));
++                    if is_range_request {
++                        if let Ok(content_range) = ContentRange::bytes(start_byte..end_byte, file_size) {
++                            response.headers.typed_insert(content_range);
++                        }
++                    }
++                }
++
++                let mime = mime_guess::from_path(file_path).first_or_octet_stream();
++                response.headers.typed_insert(ContentType::from(mime));
++
++                let (mut done_sender, done_receiver) = unbounded_channel();
++                *done_chan = Some((done_sender.clone(), done_receiver));
++                *response.body.lock() = ResponseBody::Receiving(vec![]);
++
++                context.filemanager.fetch_file_in_chunks(
++                    &mut done_sender,
++                    reader,
++                    response.body.clone(),
++                    context.cancellation_listener.clone(),
++                    range,
++                );
++
++                response
++            } else {
++                Response::network_error(NetworkError::ResourceLoadError(
++                    "Opening file failed".to_owned(),
++                ))
++            }
++        } else {
++            Response::network_error(NetworkError::ResourceLoadError(
++                "Constructing file path failed".to_owned(),
++            ))
++        };
++
++        Box::pin(ready(response))
++    }
++}
+diff --git a/ports/servoshell/protocols/packed_content.rs b/ports/servoshell/protocols/packed_content.rs
+new file mode 100644
+index 000000000..50ba51998
+--- /dev/null
++++ b/ports/servoshell/protocols/packed_content.rs
+@@ -0,0 +1,86 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! On-demand pack extraction, shared between `file.rs` and `desktop/protocols/game.rs` —
++//! both protocol handlers serve the exact same bundled content, just under different URL
++//! schemes (a raw `file:` path vs. `game:`'s virtual root; see `game.rs`'s own module doc
++//! comment for why the latter exists), so the logic for "extract whichever `.pack` archive
++//! a not-yet-extracted file lives in, the first time it's touched" only needs to exist once.
++//! Extracted out of `file.rs` when `game.rs` was added rather than duplicated — see
++//! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry. `resolve` returns
++//! `None` on Android/OpenHarmony today, harmlessly: `mach bundle --android` has no
++//! `--content-compress` support at all yet, so no `.roves-content-source` marker this looks
++//! for is ever written there.
++
++use std::path::{Path, PathBuf};
++use std::sync::Mutex;
++
++use roves_content_packer::manifest::Manifest;
++
++pub struct PackedContent {
++    /// Where `manifest.json` + `.pack` files live (read-only, shipped as-is).
++    pub content_dir: PathBuf,
++    /// Where boot files were already extracted, and where lazy ones land —
++    /// the directory the initial `file:` URL's path lives in.
++    pub cache_dir: PathBuf,
++    pub manifest: Manifest,
++    /// Serializes on-demand extraction: two near-simultaneous loads for
++    /// files in the same not-yet-extracted pack must not both start
++    /// unpacking it at once. Extraction is rare/one-time per pack per
++    /// session, so coarse (one lock for all packs, not per-pack) is fine.
++    extracting: Mutex<()>,
++}
++
++impl PackedContent {
++    /// `cache_dir`: the directory a `.roves-content-source` marker (written by
++    /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) is looked for in —
++    /// present only for a packed-content launch; absent for one opened via raw CLI
++    /// args for local dev/testing, or a build with `--content-compress=none`.
++    pub fn resolve(cache_dir: &Path) -> Option<Self> {
++        let marker = cache_dir.join(roves_content_packer::extract::CONTENT_SOURCE_MARKER);
++        let content_dir = std::fs::read_to_string(&marker).ok()?;
++        let content_dir = PathBuf::from(content_dir.trim());
++        let manifest = roves_content_packer::extract::load_manifest(&content_dir).ok()?;
++        Some(Self {
++            content_dir,
++            cache_dir: cache_dir.to_path_buf(),
++            manifest,
++            extracting: Mutex::new(()),
++        })
++    }
++
++    /// If `file_path` doesn't exist yet and falls under this managed packed
++    /// content, extracts whichever pack contains it — a synchronous,
++    /// blocking call, same as the plain file I/O around it; this only ever
++    /// happens the first time a given pack's contents are touched, including
++    /// across relaunches (see `ensure_file_available`'s own marker file).
++    pub fn ensure_available(&self, file_path: &Path) {
++        if file_path.exists() {
++            return;
++        }
++        let Ok(rel) = file_path.strip_prefix(&self.cache_dir) else {
++            return;
++        };
++        let rel_path = rel
++            .components()
++            .map(|c| c.as_os_str().to_string_lossy().into_owned())
++            .collect::<Vec<_>>()
++            .join("/");
++
++        let _guard = self.extracting.lock().unwrap();
++        // Re-check now that we hold the lock: another load() may have just
++        // finished extracting the exact pack this path lives in.
++        if file_path.exists() {
++            return;
++        }
++        if let Err(e) = roves_content_packer::extract::ensure_file_available(
++            &self.content_dir,
++            &self.cache_dir,
++            &self.manifest,
++            &rel_path,
++        ) {
++            log::warn!("on-demand extraction of {rel_path:?} failed: {e}");
++        }
++    }
++}
+diff --git a/ports/servoshell/egl/app.rs b/ports/servoshell/egl/app.rs
+index 8049462fd..7c23d18ff 100644
+--- a/ports/servoshell/egl/app.rs
++++ b/ports/servoshell/egl/app.rs
+@@ -9,6 +9,7 @@ use euclid::{Rect, Scale};
+ use keyboard_types::{CompositionEvent, CompositionState, Key, KeyState, NamedKey};
+ use log::{info, warn};
+ use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
++use servo::protocol_handler::ProtocolRegistry;
+ use servo::{
+     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
+     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
+@@ -306,20 +307,37 @@ pub struct App {
+ impl App {
+     #[servo::servo_tracing::instrument(skip_all, name = "App::new", level = "info")]
+     pub(super) fn new(init: AppInitOptions) -> Rc<Self> {
+-        let mut servo_builder = ServoBuilder::default()
++        let initial_url = init.initial_url.and_then(|string| Url::parse(&string).ok());
++        let initial_url = initial_url
++            .or_else(|| Url::parse(&init.servoshell_preferences.homepage).ok())
++            .or_else(|| Url::parse("about:blank").ok())
++            .expect("Failed to parse initial URL");
++
++        // Same `file:` registration as the desktop shell (see `desktop/app.rs`) -- takes
++        // over from the engine's own internal handler so a root-absolute asset reference
++        // (`<script src="/assets/foo.js">`, the default virtually every bundler emits)
++        // rebases onto the game's own content root instead of failing against the real OS
++        // filesystem root. Confirmed necessary on a real device: without this, a bundled
++        // game's own JS/CSS/image references (not just its top-level HTML) 404 under the
++        // plain `file:` URL this shell boots at. See `crate::protocols::file`'s own doc
++        // comment, and CUSTOMIZATIONS.md's 2026-09-12 entry for the real-device bug this
++        // was ported from desktop to fix here too.
++        let initial_file_path = initial_url.to_file_path().ok();
++        let mut protocol_registry = ProtocolRegistry::default();
++        let _ = protocol_registry.register(
++            "file",
++            crate::protocols::file::FileProtocolHandler::new(initial_file_path.as_deref()),
++        );
++
++        let servo_builder = ServoBuilder::default()
+             .opts(init.opts)
+             .preferences(init.preferences.clone())
++            .protocol_registry(protocol_registry)
+             .event_loop_waker(init.event_loop_waker.clone());
+         let servo = servo_builder.build();
+         #[cfg(feature = "webxr")]
+         servo.register_webxr_registry(Box::new(XrDiscoveryWebXrRegistry::new(init.xr_discovery)));
+ 
+-        let initial_url = init.initial_url.and_then(|string| Url::parse(&string).ok());
+-        let initial_url = initial_url
+-            .or_else(|| Url::parse(&init.servoshell_preferences.homepage).ok())
+-            .or_else(|| Url::parse("about:blank").ok())
+-            .expect("Failed to parse initial URL");
+-
+         let user_content_manager = Rc::new(UserContentManager::new(&servo));
+         let state = Rc::new(RunningAppState::new(
+             servo,

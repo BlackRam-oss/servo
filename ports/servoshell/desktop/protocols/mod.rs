@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-pub(crate) mod file;
+// `file`/`packed_content` moved out to `crate::protocols` (2026-09-12) so the Android/
+// OpenHarmony EGL shell (`egl/app.rs`) could reuse `FileProtocolHandler` too -- see that
+// module's own doc comment. Everything below here is still desktop-only.
 pub(crate) mod game;
-pub(crate) mod packed_content;
 pub(crate) mod resource;
 pub(crate) mod roves;
 pub(crate) mod saves;

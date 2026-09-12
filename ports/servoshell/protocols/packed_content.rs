@@ -2,14 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! On-demand pack extraction, shared between `file.rs` and `game.rs` — both
-//! protocol handlers serve the exact same bundled content, just under
-//! different URL schemes (a raw `file:` path vs. `game:`'s virtual root; see
-//! `game.rs`'s own module doc comment for why the latter exists), so the
-//! logic for "extract whichever `.pack` archive a not-yet-extracted file
-//! lives in, the first time it's touched" only needs to exist once. Extracted
-//! out of `file.rs` when `game.rs` was added rather than duplicated — see
-//! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry.
+//! On-demand pack extraction, shared between `file.rs` and `desktop/protocols/game.rs` —
+//! both protocol handlers serve the exact same bundled content, just under different URL
+//! schemes (a raw `file:` path vs. `game:`'s virtual root; see `game.rs`'s own module doc
+//! comment for why the latter exists), so the logic for "extract whichever `.pack` archive
+//! a not-yet-extracted file lives in, the first time it's touched" only needs to exist once.
+//! Extracted out of `file.rs` when `game.rs` was added rather than duplicated — see
+//! CUSTOMIZATIONS.md's "Virtual content root (game: protocol)" entry. `resolve` returns
+//! `None` on Android/OpenHarmony today, harmlessly: `mach bundle --android` has no
+//! `--content-compress` support at all yet, so no `.roves-content-source` marker this looks
+//! for is ever written there.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

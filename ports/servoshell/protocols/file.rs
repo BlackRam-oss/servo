@@ -10,10 +10,12 @@
 //! See `support/content-packer` and CUSTOMIZATIONS.md's content-compression
 //! entries for the full design.
 //!
-//! Registered for the `file` scheme in `app.rs`, taking over from the
-//! engine's own internal default — see `components/servo/servo.rs`'s
-//! protocol-registry merge-order change, without which an embedder can't
-//! override `file` at all.
+//! Registered for the `file` scheme in `desktop/app.rs` and `egl/app.rs` alike, taking
+//! over from the engine's own internal default — see `components/servo/servo.rs`'s
+//! protocol-registry merge-order change, without which an embedder can't override `file`
+//! at all. Lives in this crate-root `protocols` module (not `desktop/protocols/`, despite
+//! everything else about this file being desktop-vintage) specifically so both shells can
+//! share it — see this module's own `mod.rs` doc comment.
 //!
 //! Deliberately does **not** replicate the stock handler's directory-listing
 //! fallback (`local_directory_listing`): Roves never opens more than one
@@ -55,9 +57,7 @@ impl FileProtocolHandler {
     /// and as where to look for a `.roves-content-source` marker (written by
     /// `roves-content-packer extract`, see CUSTOMIZATIONS.md) — present only
     /// for a packed-content launch; absent for one opened via raw CLI args
-    /// for local dev/testing, or a build with `--content-compress=none`, in
-    /// which case `packed` alone (not `initial_dir`) behaves exactly like
-    /// the stock handler.
+    /// for local dev/testing, or a build with `--content-compress=none`.
     pub fn new(initial_file_path: Option<&Path>) -> Self {
         let initial_dir = initial_file_path.and_then(|p| p.parent()).map(Path::to_path_buf);
         let packed = initial_dir.as_deref().and_then(PackedContent::resolve);

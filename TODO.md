@@ -169,30 +169,26 @@ fallback `.cmd`) è risolto (punto 4), ma restano da fare, in ordine:
    `python/servo/platform/build_target.py`, indipendente dal problema Gradle — todo separato,
    non toccato da questo punto.
 
-## 7. Portare il protocollo `game://` anche su Android (fix "definitivo" del caricamento contenuto)
+## 7. Portare il protocollo `game://` anche su Android (il router lato client resta scoperto)
 
-**Stato: non affrontato, gap noto e documentato (2026-09-12).** Vedi `CUSTOMIZATIONS.md`,
-voce "Rewrite root-relative asset paths in the extracted HTML", per il contesto completo.
+**Stato: parzialmente fatto (2026-09-12) — vedi `CUSTOMIZATIONS.md`, voce "Port `file:`'s
+content-root rebasing to Android", per il dettaglio completo.**
 
-Il contenuto Android oggi si carica via un vero `file://<percorso estratto>/index.html`
-(vedi `MainActivity.kt`), con un fix a livello di regex che riscrive i percorsi assoluti
-(`src="/..."`) in relativi per evitare la schermata bianca. Questo **non risolve** il secondo
-problema che `game://content/` risolve per desktop: un router lato client (history mode) vede
-`location.pathname` come il vero percorso del filesystem, non `/`, e può quindi mostrare la
-propria pagina "not found" invece del contenuto reale — non ancora confermato se questo si
-manifesti per davvero (serve un test reale su un gioco che usa un router, es.
-`pixi-vn-react-template`, che infatti ne usa uno).
+Il problema dei percorsi assoluti (`src="/assets/..."`) rotti sotto `file://` è stato risolto
+**a livello di motore, non più con un patch Kotlin a regex**: `ports/servoshell/desktop/
+protocols/file.rs`'s `rebase_to_content_root` (già usato con successo su desktop) è stato
+spostato in un nuovo modulo condiviso (`ports/servoshell/protocols/`) e collegato anche a
+`egl/app.rs` (Android/OpenHarmony). Il fix a regex nell'HTML estratto (`MainActivity.kt`) resta
+presente ma è ridondante/superato, non rimosso.
 
-Il fix vero: spostare `ports/servoshell/desktop/protocols/game.rs` (e la sua dipendenza
-`packed_content.rs`) fuori dall'albero di moduli `desktop` (oggi `#[cfg(not(target_os =
-"android"))]`) in qualcosa che entrambi i target possano condividere, poi collegare
-`ServoBuilder::protocol_registry(...)` (l'estensione point esiste già, vedi
-`components/servo/servo.rs`) dentro `ports/servoshell/egl/app.rs`, che oggi costruisce solo
-un `ServoBuilder::default()` senza alcun registro personalizzato. Non tentato in questa
-sessione perché tocca codice condiviso con OpenHarmony, non verificabile localmente (nessun
-dispositivo/emulatore disponibile), e più rischioso del fix Kotlin-only già fatto — da
-affrontare con più tempo/cautela, idealmente dopo aver confermato se il problema del router
-si manifesta davvero.
+**Non ancora affrontato:** il *secondo* problema che il protocollo `game://content/` completo
+risolverebbe — un router lato client (history mode) vede `location.pathname` come il vero
+percorso del filesystem, non `/`, e potrebbe mostrare la propria pagina "not found" invece del
+contenuto reale. Testato con un gioco reale che usa un router (`pixi-vn-react-template`,
+TanStack Router) e **il problema non si è manifestato** — ma questo non è una garanzia
+generale per ogni router/configurazione possibile, solo un dato reale per QUESTO caso. Se
+riemergesse con un altro gioco, il fix vero resta portare anche `game.rs`/`GameProtocolHandler`
+(non solo il semplice fallback di `file.rs`) sullo stesso modulo condiviso.
 
 ## Note
 
