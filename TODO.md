@@ -5,6 +5,75 @@ questa cartella. Vedi [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) per le modifich
 applicate e [`CLAUDE.md`](./CLAUDE.md) per il protocollo da seguire quando si chiude uno di
 questi punti (aggiornare `CUSTOMIZATIONS.md` + rigenerare la patch nella stessa sessione).
 
+
+## Backlog attuale — revisione 2026-09-13
+
+Questa sezione è la lista operativa aggiornata dopo il controllo di `main`.
+Le sezioni numerate sotto sono conservate come storico: le loro dichiarazioni
+su repository sibling e workflow dormienti non descrivono necessariamente la
+struttura attuale. Le modifiche nei repository esterni non sono state verificate
+in questa revisione e non vengono considerate completate per inferenza.
+
+### Android: integrazione con Google Play — da implementare
+
+In `main` non risultano SDK o bridge per Google Play Games Services, Billing o
+Play Asset Delivery. La presenza di `google()` nei repository Gradle serve a
+risolvere dipendenze e non costituisce un'integrazione Google Play.
+
+- [ ] **Pubblicazione:** aggiungere output Android App Bundle (`.aab`) nel percorso `mach bundle`, mantenendo l'APK per test/sideload. Gestire application ID per gioco e versionCode/versionName espliciti: oggi il modulo usa `org.servo.servoshell` e una versione del motore.
+- [ ] **Configurazione release:** collegare upload key/Play App Signing al flusso documentato; verificare firma reale, aggiornamento di una versione installata e gestione delle credenziali in CI. Controllare i requisiti target SDK e delle librerie native richiesti al momento della pubblicazione, senza fissare nel TODO requisiti che cambiano nel tempo.
+- [ ] **Play Games Services:** integrare autenticazione/stato del giocatore, obiettivi e classifiche tramite SDK Android nativo e un bridge asincrono per il gioco web; configurare ID, certificati e account di test. Definire comportamento offline, annullamento ed errori.
+- [ ] **Salvataggi cloud Google Play:** integrare Saved Games se previsto per il gioco; definire conflitti tra dispositivi, metadati/versioni e recupero offline. Non presumere che i salvataggi Steam Cloud offrano già un backend Android equivalente.
+- [ ] **Acquisti in-app, opzionali:** aggiungere Play Billing per i giochi che lo richiedono, con catalogo/configurazione per gioco, ripristino degli acquisti, gestione pending/cancellazioni e verifica/acknowledgement delle transazioni. Definire quali operazioni richiedono un backend del gioco.
+- [ ] **Asset grandi, opzionali:** integrare Play Asset Delivery con contenuti install-time/fast-follow/on-demand; collegare disponibilità, progresso, errori e percorsi degli asset al loader. Non confondere asset pack Android con gli archivi tar/zstd desktop.
+- [ ] **Distribuzione di test:** documentare Play Console e provare una release su un track di test e un dispositivo reale. La pubblicazione automatica tramite Developer Publishing API è un passo successivo configurabile; non attivarla automaticamente nei workflow esistenti.
+- [ ] **API e strumenti esterni:** esporre configurazione e capability in `roves-api`, `roves-action` e Packmaster con interventi dedicati nei rispettivi repository; assenza dei servizi deve produrre uno stato non disponibile prevedibile.
+
+Riferimenti ufficiali: [Android App Bundle](https://developer.android.com/guide/app-bundle),
+[Play Games Services](https://play.google.com/console/about/playgamesservices/),
+[Play Billing](https://developer.android.com/google/play/billing),
+[Play Asset Delivery](https://developer.android.com/guide/playcore/asset-delivery),
+[Publishing API](https://developers.google.com/android-publisher).
+Le funzionalità opzionali non sono prerequisiti universali per pubblicare un gioco.
+
+### Mobile: completare il percorso applicativo
+
+- [ ] **WebView native Android/iOS:** proposta nella [PR #7](https://github.com/DRincs-Productions/roves/pull/7), non presente in `main` alla revisione. Verificare prima di sostituire il percorso Servo/JNI corrente.
+- [ ] **iOS:** contenitore e packaging completi, firma/archive/export, icone e metadati per gioco, test su simulatori/dispositivi. Il contenitore proposto in #7 carica file locali: restano origine stabile, fetch/moduli, routing e storage compatibili con i giochi reali.
+- [ ] **Bridge mobile Roves:** definire capability e contratti asincroni per salvataggi, servizi store e funzionalità native; evitare di presumere che `game://`, `steam:` e i protocolli desktop esistano automaticamente nelle WebView.
+- [ ] **Verifiche Android aperte:** firma release effettiva; bundling su Windows; caricamento di routing, asset assoluti, moduli e storage su dispositivo; pausa/ripresa, rotazione, fullscreen, audio e gamepad. Il codice presente e una build debug riuscita non chiudono questi test.
+- [ ] **Manifest residuo:** definire quali campi hanno un equivalente mobile sensato (`background_color`, display, lingua ed entry point) e testarli. Name/short_name/orientation, candidati manifest e risoluzione icona sono già presenti: non reimplementarli. Non reintrodurre la status bar contro il design precedente.
+
+### Desktop: prestazioni, contenuti e salvataggi
+
+- [ ] **Baseline hardware:** confermare GPU/renderer e assenza di fallback software sui target reali Windows/macOS/Linux; fissare giochi, risoluzioni, cache e metodologia di misura.
+- [ ] **Frame pacing e rendering:** valutare refresh/vsync del monitor, costo composizione della shell e repaint separati GUI/contenuto. Indagine nella [PR #8](https://github.com/DRincs-Productions/roves/pull/8), non implementazioni completate.
+- [ ] **I/O e asset:** evitare letture/decompressione bloccanti nei percorsi sensibili; misurare copie e code dei blocchi; valutare prefetch e pack per livello con cancellazione e invalidazione cache coerenti.
+- [ ] **Consumi in background:** verificare e collegare occlusione/minimizzazione al throttling desktop, preservando la politica del gioco per audio e multiplayer.
+- [ ] **GC incrementale:** includere il lavoro lungo di correttezza Servo–SpiderMonkey (inventario pre-barriere, correzioni, stress test, poi benchmark). Non abilitarlo semplicemente tramite flag: `script_runtime.rs` segnala pre-barriere non corrette. Piano nella PR #8.
+- [ ] **Salvataggi locali robusti:** valutare scritture atomiche, backup/recupero da interruzioni, schema/versioni e migrazioni; il protocollo attuale usa scritture dirette ai file.
+- [ ] **Conflitti Steam Cloud:** il backend esiste già, ma documenta una politica locale-prima con download cloud quando manca il file locale. Implementare confronto/versioni e risoluzione dei conflitti se richiesti; verificare errori/quota/offline senza perdere il salvataggio locale.
+- [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
+- [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
+
+### Dipendenze, release e manutenzione
+
+- [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
+- [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
+- [ ] **Distribuzione del fork:** i workflow test/release/android sono alla radice di questo repository e quindi non sono qui dormienti. Verificare separatamente che i consumer esterni scarichino Roves patchato; il vecchio punto 1 non dimostra un difetto ancora presente in quei repository.
+- [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.
+- [ ] **Riproducibilità:** ogni modifica runtime deve essere riproducibile da upstream + patch e mantenere coerenti documentazione, lockfile, bundle e asset CI. Gli aggiornamenti del solo backlog non richiedono una patch del motore.
+- [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.
+
+### Regola per chiudere i punti
+
+Distinguere sempre **implementato**, **verificato** e **proposto in PR**. Un punto
+si chiude con evidenza pertinente al comportamento finale. Il presente aggiornamento
+è una revisione statica del backlog: non certifica build/device test né modifica
+funzionalità del motore.
+
+## Storico delle verifiche e degli interventi precedenti
+
 ---
 
 ## 1. Collegare `embedded.yml` al build patchato invece del binario Servo stock
