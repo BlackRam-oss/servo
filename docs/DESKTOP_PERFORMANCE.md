@@ -301,3 +301,64 @@ Le migliori prime patch non sono necessariamente quelle con il maggior numero
 di flag. La scelta deve seguire il collo di bottiglia del gioco rappresentativo.
 Questa revisione estende e corregge l'analisi statica; non contiene benchmark
 runtime né stime percentuali di miglioramento. Non cambia codice di produzione.
+
+## Lavoro pianificato: rendere sicuro il GC incrementale
+
+Questo intervento viene incluso nel piano anche se richiede un lavoro lungo.
+L'obiettivo è correggere l'integrazione Servo–SpiderMonkey, verificare che il
+GC incrementale sia sicuro e solo allora valutarne l'abilitazione per i giochi.
+Non è escluso dalla roadmap: resta escluso soltanto come semplice tuning tramite
+flag. Non viene stimata una durata prima di conoscere l'estensione del problema.
+
+### Fase 1: delimitare il problema
+
+- Verificare se il commento sulle pre-barriere descrive ancora un difetto presente nella versione di SpiderMonkey usata da Roves; cercare test, issue e interventi upstream pertinenti.
+- Mappare rooting, tracing e mutazioni dei riferimenti gestiti da Servo, inclusi i collegamenti tra oggetti DOM Rust e oggetti JavaScript, i binding generati e gli eventuali wrapper della libreria mozjs.
+- Individuare quali operazioni richiedono pre-barriere e quali le applicano già. Distinguere i requisiti del GC incrementale da quelli del GC generazionale e dalle post-barriere.
+- Preparare una riproduzione minima o un test di stress che evidenzi il difetto. Un commento da solo non stabilisce né la causa completa né l'ampiezza della correzione.
+
+Risultato richiesto: inventario dei percorsi interessati, evidenza riproducibile,
+requisiti di correttezza e scelta tra recepire una correzione upstream o intervenire
+nell'integrazione locale. Se il problema non è riproducibile, documentare i limiti
+delle prove invece di considerarlo automaticamente risolto.
+
+### Fase 2: implementare le correzioni
+
+Correggere i percorsi individuati usando le API e le astrazioni di barriera
+compatibili con la versione effettiva di SpiderMonkey. Verificare anche generatori
+e wrapper condivisi: una modifica centralizzata può essere preferibile a molte
+correzioni manuali nei singoli DOM. Non prescrivere ora una soluzione senza aver
+completato l'inventario. Mantenere il default incrementale disabilitato durante
+questa fase e rendere le patch ricostruibili nel modello upstream+patch di Roves.
+
+### Fase 3: verificare la correttezza
+
+Aggiungere test di regressione basati sui difetti trovati e stress test con
+raccolta incrementale, mutazioni tra slice, creazione/distruzione di DOM e
+riferimenti Rust–JS, navigazione e teardown. Includere worker e contesti multipli
+se l'inventario mostra percorsi condivisi interessati. Usare verificatori/barrier
+checking e GC zeal dove disponibili nella versione e nella configurazione di
+SpiderMonkey in uso; controllare che siano realmente attivi.
+
+Eseguire le verifiche funzionali pertinenti e strumenti di rilevamento degli
+errori di memoria nelle configurazioni supportate. Provare Windows, macOS e Linux.
+Una sessione senza crash e un benchmark FPS non costituiscono una verifica
+sufficiente delle barriere. Documentare anche test e strumenti non disponibili.
+
+### Fase 4: misurare e decidere l'abilitazione
+
+Dopo la verifica della correttezza, confrontare GC non incrementale e incrementale
+sugli stessi giochi e profili di build. Misurare durata e distribuzione delle
+pause GC, frame p95/p99, throughput e memoria; separare warm-up e caricamenti.
+Valutare il budget delle slice rispetto al refresh del monitor senza promettere
+che ogni slice rispetti rigidamente quel budget. Non modificare contemporaneamente
+GC per zona, dimensioni heap o JIT: servono confronti attribuibili.
+
+Solo dopo questi passaggi proporre un'abilitazione sperimentale controllata e,
+se giustificato dai risultati, il nuovo default. Conservare una possibilità di
+rollback. Se il GC incrementale non migliora i giochi rappresentativi, la
+correzione di correttezza resta utile ma l'abilitazione non è obbligatoria.
+
+Questo filone può essere pianificato insieme agli altri interventi prestazionali,
+ma deve avere patch e revisioni dedicate. Il presente aggiornamento aggiunge il
+lavoro alla roadmap; non implementa ancora le barriere né abilita il GC.
