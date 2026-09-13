@@ -18,7 +18,7 @@ con un benchmark: la release attuale è già ottimizzata.
 | Alta | Refresh driver desktop legato al monitor/vsync | `components/paint/refresh_driver.rs`, `TimerRefreshDriver::observe_next_frame`: `Duration::from_millis(1000 / 120)` | Migliore regolarità dei frame e meno lavoro superfluo sui monitor lenti |
 | Alta | Misurare un percorso di rendering senza egui quando non ci sono overlay | `desktop/gui.rs`: `Gui::update` chiama `repaint_webviews` e inserisce un callback di composizione; `Gui::paint` presenta la GUI | Ridurre lavoro CPU della shell e copie GPU, soprattutto a risoluzioni alte |
 | Alta per giochi con streaming | Spostare decompressione e I/O bloccante fuori dal percorso di caricamento | `protocols/game.rs::load` chiama `ensure_available` prima di restituire il future; `protocols/packed_content.rs` usa un mutex unico | Ridurre picchi di latenza al primo caricamento di livelli/audio/texture |
-| Alta per giochi con molte allocazioni JS | Valutare GC incrementale | `components/config/prefs.rs`: `js_mem_gc_incremental_enabled = false`; applicato in `components/script/script_runtime.rs` | Ridurre pause lunghe del GC, con possibile costo sul throughput |
+| Non applicabile come semplice tuning | GC incrementale | `components/script/script_runtime.rs`: commento esplicito sulle pre-barriere non corrette | Richiede prima un intervento di correttezza nel motore |
 | Media | Confrontare release, production e un profilo orientato alla velocità con ThinLTO | `Cargo.toml`: production usa `opt-level = "s"`, LTO e un codegen unit; release workflow usa `--release` | Possibile vantaggio CPU; costo di compilazione e dimensioni da misurare |
 | Media per GPU limitate | Risoluzione interna configurabile per il contenuto del gioco | Viewport fisico dipendente dalla scala HiDPI in `desktop/gui.rs` e `headed_window.rs` | Ridurre il carico GPU con compromesso sulla qualità |
 | Bassa, solo avvio | Ridurre/rendere opzionale il tempo minimo della splash | `desktop/app.rs`: `MIN_SPLASH_DURATION = 500 ms`, condizione in `try_finish_booting` | Avvio caldo potenzialmente più rapido, nessun beneficio sugli FPS |
@@ -78,20 +78,19 @@ Un semplice mutex per pack permette più concorrenza ma non rende l'I/O asincron
 Non aggiungere una cache RAM indiscriminata: il filesystem è già cacheato dal SO
 ed una seconda copia può aumentare la memoria dei giochi con texture grandi.
 
-## GC JavaScript
+## GC JavaScript: correzione dopo l'approfondimento
 
-Il GC incrementale e quello per zona sono disabilitati nelle preferenze
-predefinite; `components/script/script_runtime.rs` applica queste impostazioni
-a SpiderMonkey. Questo è un candidato specifico per giochi che allocano molto,
-non la prova che il GC sia il collo di bottiglia. Le impostazioni possono essere
-sovrascritte al lancio: verificare i valori effettivi.
+Il GC incrementale non è un candidato da abilitare tramite preferenza.
+`components/script/script_runtime.rs`, subito prima di impostare
+`JSGC_INCREMENTAL_GC_ENABLED`, dichiara: “Pre-barriers aren't implemented correctly
+at the moment, so this preference defaults to false.” La disabilitazione ha quindi
+una ragione di correttezza, non una semplice scelta di prestazioni.
 
-Esperimento separato: abilitare il GC incrementale mantenendo le altre opzioni
-invariate, misurando pause GC, p99 dei frame, throughput e memoria. Valutare il GC
-per zona in un secondo confronto. Verificare perché queste scelte upstream sono
-disabilitate e la compatibilità con integrazione/tracing di Servo prima di
-cambiare il default. Non promettere meno scatti basandosi solo sul nome della
-preferenza e non cambiare contemporaneamente heap, scheduling e compilazione.
+L'indicazione iniziale di provarne l'abilitazione viene ritirata. Prima servono
+pre-barriere corrette, revisione del tracing e verifiche dedicate nel motore.
+Per ridurre pause GC nell'immediato, profilare le allocazioni del gioco e valutare
+il riuso di buffer/oggetti nei percorsi caldi. Il GC per zona è un parametro
+separato e non risolve il problema delle pre-barriere.
 
 ## 4. Profili di compilazione
 
@@ -144,3 +143,161 @@ Accettare un candidato solo se il miglioramento supera la variabilità tra run,
 non peggiora p99/memoria in modo significativo e supera le verifiche funzionali
 (input, audio, fullscreen, accessibilità, resize, salvataggi). Registrare i numeri
 nel branch. L'analisi attuale non modifica runtime o configurazione di release.
+
+## Approfondimento: percorso effettivo del frame
+
+Il percorso osservato è:
+
+1. `TimerRefreshDriver` pianifica una callback; `BaseRefreshDriver` risveglia il loop.
+2. `RunningAppState::spin_event_loop` esegue il lavoro Servo e aggiorna le richieste delle finestre.
+3. `Painter::needs_repaint` verifica sia le ragioni di repaint sia `wait_to_paint` del refresh driver.
+4. La shell richiede un redraw; il gestore headed esegue `Gui::update`.
+5. `ServoShellWindow::repaint_webviews` invoca `WebView::paint`, poi `Paint::render` e `Painter::render`.
+6. WebRender aggiorna e renderizza la scena; il callback offscreen compone il risultato nel parent egui.
+7. `Gui::paint` presenta il parent.
+
+Non tutte queste operazioni si eseguono immediatamente alla scadenza del timer:
+coda eventi, messaggi, disponibilità del frame e attesa dello swap si interpongono.
+Questo spiega perché il timer da 8 ms non basta a stimare FPS o latenza input.
+`Paint::handle_messages` deduplica già `NewWebRenderFrameReady` per painter:
+aggiungere una seconda deduplicazione senza misure probabilmente non aiuta.
+
+### Repaint della GUI contro repaint del contenuto
+
+`WebView::paint` chiama il rendering senza un controllo locale del dirty state.
+`Paint::render` inoltra direttamente a `Painter::render`. Quindi un redraw
+richiesto da un overlay può arrivare anche al renderer della pagina. Non dimostra
+che WebRender ricostruisca ogni volta la scena: `renderer.update()` e
+`renderer.render()` sono distinti dal lavoro di scene building.
+
+Esperimento più circoscritto del bypass totale egui: tenere separati il dirty
+state dell'overlay e quello del contenuto, ricomponendo il framebuffer esistente
+quando cambia solo l'overlay. Misurare con pagina statica e dialogo animato.
+Questo richiede preservare resize, context loss, screenshot, metriche di paint
+e tick delle animazioni: saltare semplicemente `webview.paint()` può impedire
+la corretta progressione del refresh driver, notificato dentro `Painter::render`.
+
+## Approfondimento: il caricamento a blocchi non è interamente asincrono
+
+`components/net/filemanager_thread.rs::fetch_file_in_chunks` usa `spawn_task`
+che, in `components/net/async_runtime.rs`, chiama `Handle::spawn` su Tokio.
+Dentro il task il reader è però `std::io::BufReader<std::fs::File>` e
+`reader.fill_buf()` è una lettura sincrona. `yield_now().await` avviene dopo
+il blocco, non rende asincrona la lettura che lo precede.
+
+Oltre all'estrazione dei pack, l'I/O a cache fredda può quindi occupare i worker
+Tokio usati da altri task. Distinguere almeno tre misure: attesa mutex ed
+estrazione; apertura/metadata; trasferimento dei blocchi. Valutare I/O async
+appropriato o un pool bloccante dedicato e limitato. Non dedurre dal nome
+`spawn_blocking_task` del wrapper che usi `tokio::spawn_blocking`: quel wrapper
+chiama `block_on` e non è una soluzione pronta da riutilizzare.
+
+### Allocazioni e copie per blocco
+
+Il blocco nominale è 32 KiB (`FILE_CHUNK_SIZE = 32768`). Il loader:
+
+- copia il buffer di `fill_buf()` tramite `.to_vec()`;
+- copia il chunk nel `ResponseBody::Receiving` tramite `extend_from_slice`;
+- crea un'altra copia per `Data::Payload(chunk.to_vec())`;
+- invia il payload attraverso un canale non limitato.
+
+Evidenza: queste copie sono presenti nel codice. Ipotesi: possono incidere sui
+caricamenti grandi; il costo reale rispetto a decodifica immagini/audio e upload
+GPU non è ancora noto. Il body conserva la risposta mentre il canale può avere
+payload in coda: la memoria di picco va misurata, non stimata come un solo blocco.
+
+Esperimenti separati: eliminare la copia temporanea di `fill_buf()` mantenendo
+gli ownership corretti; preallocare il body con limite quando la dimensione è
+nota; verificare se il protocollo consente payload condivisi invece di copie;
+misurare la necessità di backpressure con un consumatore lento. Un canale
+limitato richiede adeguare producer/consumer e cancellazione, non solo cambiare
+il costruttore. Preservare range HTTP, EOF, file modificati durante il caricamento
+e propagazione degli errori: l'attuale `fill_buf().unwrap()` merita anche una
+revisione di robustezza indipendente dalle prestazioni.
+
+## Approfondimento: contenuti, cache e concorrenza
+
+`ensure_pack_extracted` usa un marker per saltare pack già estratti. L'estrazione
+legge uno stream zstd/tar: non carica deliberatamente tutto l'archivio in RAM.
+La ricerca file→pack usa `manifest.files.get`, mentre il pack viene cercato
+linearmente nella lista. Indicizzare anche i pack è possibile ma ha priorità
+bassa: normalmente decompressione e scritture dominano quella ricerca.
+
+Prima di parallelizzare, controllare che due pack non scrivano percorsi comuni
+e coordinare la cancellazione con `clear_content_cache`. Marker, invalidazione
+tramite hash del contenuto e aggiornamenti del gioco devono restare coerenti.
+Un file già presente può essere osservato mentre si estrae: un futuro design
+parallelo deve definire quando diventa leggibile, usando staging/commit dove
+necessario. Limitare la concorrenza per evitare saturazione disco e picchi RAM.
+
+## Approfondimento: finestra nascosta e consumi
+
+`WebView::set_throttled` è disponibile e l'integrazione EGL lo utilizza.
+Nella shell desktop esaminata non è stato trovato un uso di `set_throttled`, né
+un gestore funzionale di `WindowEvent::Occluded` collegato a quell'API; il nome
+dell'evento compare nel tracing. Questo è un gap d'integrazione da verificare
+con una finestra minimizzata, non la prova che ogni piattaforma continui a
+renderizzare a pieno ritmo: il window manager e Servo possono introdurre altre
+limitazioni.
+
+Esperimento: misurare CPU/GPU e tick rAF con app visibile, minimizzata, coperta
+e semplicemente senza focus. Se necessario, collegare minimizzazione/occlusione
+al throttling, ripristinandolo al ritorno. Non usare automaticamente perdita di
+focus come pausa: un gioco visibile su un altro monitor può dover continuare.
+Definire comportamento per audio, multiplayer, input e avanzamento simulazione.
+Questo intervento punta a consumo e disponibilità CPU, non ad aumentare gli FPS
+mentre il gioco è visibile.
+
+## Approfondimento: WebGL, parallelismo e log
+
+### Query WebGL sincrone
+
+In `components/script/dom/webgl/webglrenderingcontext.rs`, `Finish`, diverse
+query `GetParameter` e `DrawingBufferWidth/Height` inviano un comando e aspettano
+`receiver.recv()`. Altre proprietà, come alcuni limiti hardware, sono già
+restituite da campi locali. Non tutte le query attraversano il canale.
+
+Per un gioco che interroga frequentemente stato/risultati, questi round trip
+possono diventare un costo CPU/di sincronizzazione. Tracciare numero e durata
+prima di intervenire. Nel gioco, memorizzare i valori stabili e aggiornare le
+dimensioni in risposta ai resize; evitare `finish()` nei frame normali. Nel
+motore, un'eventuale cache deve rispettare stato, resize e context loss.
+Non trasformare query sincrone in risultati obsoleti per ottenere FPS maggiori.
+
+### Pool WebRender
+
+`Painter::new` limita i worker WebRender al minimo tra parallelismo disponibile
+e `thread_pool_webrender_workers_max`, che per default vale 4. Il metodo di upload
+texture distingue già ANGLE (`Immediate`) dagli altri renderer (`PixelBuffer`).
+Non aumentare i worker al numero di core indiscriminatamente: scene building
+può migliorare mentre JS, decoder e Tokio competono per gli stessi core.
+Provare 2/4/8 worker solo se i profili mostrano scene building CPU limitato;
+valutare anche macchine con pochi core. Lasciare invariato il metodo di upload
+senza tracce GPU/driver che giustifichino una variante.
+
+### Logging
+
+`desktop/logging.rs` configura un file e il livello predefinito `info`.
+Il controllo speciale degli errori di caricamento prende il mutex solo su
+specifici record `Error`, non per ogni messaggio: non è un lock globale del frame.
+I log ad alta frequenza del gioco o del motore possono invece falsare le misure.
+Confrontare logging normale e `RUST_LOG=warn` in un test controllato, conservando
+una modalità diagnostica; non eliminare gli errori per inseguire le prestazioni.
+
+## Ordine operativo rivisto
+
+| Ordine | Lavoro | Ambito | Criterio prima di implementare |
+|---|---|---|---|
+| 1 | Baseline e attribuzione CPU/GPU/I/O | Strumenti e gioco | Tracce riproducibili, cache e risoluzione fissate |
+| 2 | Refresh monitor/vsync | Shell e integrazione Servo | Confermare ritmo rAF e attese present su 60/144+ Hz |
+| 3 | I/O bloccante e copie dei blocchi | Servo net e loader Roves | Confermare worker occupati e memoria di picco nei caricamenti |
+| 4 | Prefetch e pack per livello | Packer/loader e gioco | Scatti correlati alla prima estrazione |
+| 5 | Throttling quando nascosto | Shell desktop | Consumi anomali minimizzato, comportamento audio definito |
+| 6 | Repaint overlay separato | Shell e renderer | Costo contenuto ripetuto su scene statiche con overlay |
+| 7 | Profili, worker e risoluzione | Build/configurazione | Benchmark specifici CPU o GPU limitati |
+| Escluso come tuning | Abilitazione GC incrementale | Correttezza SpiderMonkey/Servo | Pre-barriere corrette prima di qualsiasi abilitazione |
+
+Le migliori prime patch non sono necessariamente quelle con il maggior numero
+di flag. La scelta deve seguire il collo di bottiglia del gioco rappresentativo.
+Questa revisione estende e corregge l'analisi statica; non contiene benchmark
+runtime né stime percentuali di miglioramento. Non cambia codice di produzione.
